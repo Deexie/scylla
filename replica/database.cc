@@ -1028,12 +1028,12 @@ future<> database::add_column_family(keyspace& ks, schema_ptr schema, column_fam
     ks.add_or_update_column_family(schema);
     cf->start();
     schema->registry_entry()->set_table(cf->weak_from_this());
+    auto holder = co_await _cf_lock.hold_write_lock();
     _column_families.emplace(uuid, std::move(cf));
     _ks_cf_to_uuid.emplace(std::move(kscf), uuid);
     if (schema->is_view()) {
         find_column_family(schema->view_info()->base_id()).add_or_update_view(view_ptr(schema));
     }
-    return make_ready_future();
 }
 
 future<> database::add_column_family_and_make_directory(schema_ptr schema) {
@@ -1068,6 +1068,7 @@ future<> database::remove(table& cf) noexcept {
     auto s = cf.schema();
     auto& ks = find_keyspace(s->ks_name());
     cf.deregister_metrics();
+    auto holder = co_await _cf_lock.hold_write_lock();
     _column_families.erase(s->id());
     ks.metadata()->remove_column_family(s);
     _ks_cf_to_uuid.erase(std::make_pair(s->ks_name(), s->cf_name()));
@@ -1078,7 +1079,6 @@ future<> database::remove(table& cf) noexcept {
             // Drop view mutations received after base table drop.
         }
     }
-    return make_ready_future();
   } catch (...) {
     on_fatal_internal_error(dblog, format("database::remove: {}", std::current_exception()));
   }
