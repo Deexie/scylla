@@ -1044,6 +1044,20 @@ future<> database::add_column_family_and_make_directory(schema_ptr schema) {
     co_await cf.init_storage();
 }
 
+future<> database::for_each_table_gently(std::function<future<>(table_id, lw_shared_ptr<column_family>)> f) {
+    auto holder = co_await _cf_lock.hold_read_lock();
+    for (auto& [id, cf]: _column_families) {
+        co_await f(id, cf);
+    }
+}
+
+future<> database::parallel_for_each_table(std::function<future<>(table_id, lw_shared_ptr<column_family>)> f) {
+    auto holder = co_await _cf_lock.hold_read_lock();
+    co_await coroutine::parallel_for_each(_column_families, [f = std::move(f)] (auto& cf) {
+        return f(cf.first, cf.second);
+    });
+}
+
 bool database::update_column_family(schema_ptr new_schema) {
     column_family& cfm = find_column_family(new_schema->id());
     bool columns_changed = !cfm.schema()->equal_columns(*new_schema);

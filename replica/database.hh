@@ -1524,6 +1524,9 @@ public:
     void maybe_init_schema_commitlog();
     future<> add_column_family_and_make_directory(schema_ptr schema);
 
+    future<> for_each_table_gently(std::function<future<>(table_id, lw_shared_ptr<column_family>)>);
+    future<> parallel_for_each_table(std::function<future<>(table_id, lw_shared_ptr<column_family>)>);
+
     /* throws no_such_column_family if missing */
     const table_id& find_uuid(std::string_view ks, std::string_view cf) const;
     const table_id& find_uuid(const schema_ptr&) const;
