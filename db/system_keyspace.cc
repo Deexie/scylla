@@ -2155,18 +2155,17 @@ public:
         for (auto& ks_data : keyspace_names) {
             co_await result.emit_partition_start(ks_data.key);
 
-            const auto snapshots_by_tables = co_await _db.map_reduce(snapshot_reducer(), [ks_name_ = ks_data.name] (replica::database& db) mutable -> future<snapshots_by_tables_map> {
-                auto ks_name = std::move(ks_name_);
+            const auto snapshots_by_tables = co_await _db.map_reduce(snapshot_reducer(), coroutine::lambda([ks_name_ = ks_data.name] (replica::database& db) mutable -> future<snapshots_by_tables_map> {
                 snapshots_by_tables_map snapshots_by_tables;
-                for (auto& [_, table] : db.get_column_families()) {
+                co_await db.for_each_table_gently(coroutine::lambda([&snapshots_by_tables, ks_name = std::move(ks_name_)] (table_id id, lw_shared_ptr<replica::table> table) -> future<> {
                     if (table->schema()->ks_name() != ks_name) {
-                        continue;
+                        co_return;
                     }
                     const auto unordered_snapshots = co_await table->get_snapshot_details();
                     snapshots_by_tables.emplace(table->schema()->cf_name(), std::map<sstring, replica::table::snapshot_details>(unordered_snapshots.begin(), unordered_snapshots.end()));
-                }
+                }));
                 co_return snapshots_by_tables;
-            });
+            }));
 
             for (const auto& [table_name, snapshots] : snapshots_by_tables) {
                 for (auto& [snapshot_name, details] : snapshots) {

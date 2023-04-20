@@ -2342,11 +2342,11 @@ schema_ptr database::find_indexed_table(const sstring& ks_name, const sstring& i
 
 future<> database::close_tables(table_kind kind_to_close) {
     auto b = defer([this] { _stop_barrier.abort(); });
-    co_await coroutine::parallel_for_each(_column_families, [this, kind_to_close](auto& val_pair) -> future<> {
-        auto& s = val_pair.second->schema();
+    co_await parallel_for_each_table([this, kind_to_close](table_id id, lw_shared_ptr<replica::table> table) -> future<> {
+        auto& s = table->schema();
         table_kind k = is_system_table(*s) || _cfg.extensions().is_extension_internal_keyspace(s->ks_name()) ? table_kind::system : table_kind::user;
         if (k == kind_to_close) {
-            co_await val_pair.second->stop();
+            co_await table->stop();
         }
     });
     co_await _stop_barrier.arrive_and_wait();
@@ -2431,8 +2431,8 @@ future<> database::stop() {
 }
 
 future<> database::flush_all_memtables() {
-    return parallel_for_each(_column_families, [] (auto& cfp) {
-        return cfp.second->flush();
+    return parallel_for_each_table([] (table_id id, lw_shared_ptr<replica::table> table) {
+        return table->flush();
     });
 }
 

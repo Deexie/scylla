@@ -116,8 +116,8 @@ SEASTAR_THREAD_TEST_CASE(test_large_data) {
         //   and the old sstable is deleted.
         flush(e);
         e.db().invoke_on_all([] (replica::database& dbi) {
-            return parallel_for_each(dbi.get_column_families(), [&dbi] (auto& table) {
-                return dbi.get_compaction_manager().perform_major_compaction((table.second)->as_table_state());
+            return dbi.parallel_for_each_table([&dbi] (table_id id, lw_shared_ptr<replica::table> table) {
+                return dbi.get_compaction_manager().perform_major_compaction((table)->as_table_state());
             });
         }).get();
 

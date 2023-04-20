@@ -126,8 +126,7 @@ future<> db::commitlog_replayer::impl::init() {
         }
     }, [this](replica::database& db) {
         return do_with(shard_rpm_map{}, [this, &db](shard_rpm_map& map) {
-            return parallel_for_each(db.get_column_families(), [this, &map](auto& cfp) {
-                auto uuid = cfp.first;
+            return db.parallel_for_each_table([this, &map](table_id uuid, lw_shared_ptr<replica::table> table) {
                 // We do this on each cpu, for each CF, which technically is a little wasteful, but the values are
                 // cached, this is only startup, and it makes the code easier.
                 // Get all truncation records for the CF and initialize max rps if
