@@ -1025,12 +1025,19 @@ future<> database::add_column_family(keyspace& ks, schema_ptr schema, column_fam
     if (_ks_cf_to_uuid.contains(kscf)) {
         throw std::invalid_argument("Column family " + schema->cf_name() + " exists");
     }
-    ks.add_or_update_column_family(schema);
-    schema->registry_entry()->set_table(cf->weak_from_this());
     auto holder = co_await _cf_lock.hold_write_lock();
-    auto [it, _] = _column_families.emplace(uuid, std::move(cf));
-    _ks_cf_to_uuid.emplace(std::move(kscf), uuid);
-    it->second->start();
+    try {
+        ks.add_or_update_column_family(schema);
+        schema->registry_entry()->set_table(cf->weak_from_this());
+        auto [it, _] = _column_families.emplace(uuid, std::move(cf));
+        _ks_cf_to_uuid.emplace(std::move(kscf), uuid);
+        it->second->start();
+    } catch (...) {
+        _ks_cf_to_uuid.erase(std::make_pair(schema->ks_name(), schema->cf_name()));
+        _column_families.erase(uuid);
+        ks.metadata()->remove_column_family(schema);
+        throw;
+    }
     if (schema->is_view()) {
         find_column_family(schema->view_info()->base_id()).add_or_update_view(view_ptr(schema));
     }
