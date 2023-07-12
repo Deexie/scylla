@@ -1077,25 +1077,24 @@ bool database::update_column_family(schema_ptr new_schema) {
 }
 
 future<> database::remove(table& cf) noexcept {
-  // FIXME: fix indentation
-  try {
-    auto s = cf.schema();
-    auto& ks = find_keyspace(s->ks_name());
-    cf.deregister_metrics();
-    auto holder = co_await _cf_lock.hold_write_lock();
-    _column_families.erase(s->id());
-    ks.metadata()->remove_column_family(s);
-    _ks_cf_to_uuid.erase(std::make_pair(s->ks_name(), s->cf_name()));
-    if (s->is_view()) {
-        try {
-            find_column_family(s->view_info()->base_id()).remove_view(view_ptr(s));
-        } catch (no_such_column_family&) {
-            // Drop view mutations received after base table drop.
+    try {
+        auto s = cf.schema();
+        auto& ks = find_keyspace(s->ks_name());
+        cf.deregister_metrics();
+        auto holder = co_await _cf_lock.hold_write_lock();
+        _column_families.erase(s->id());
+        ks.metadata()->remove_column_family(s);
+        _ks_cf_to_uuid.erase(std::make_pair(s->ks_name(), s->cf_name()));
+        if (s->is_view()) {
+            try {
+                find_column_family(s->view_info()->base_id()).remove_view(view_ptr(s));
+            } catch (no_such_column_family&) {
+                // Drop view mutations received after base table drop.
+            }
         }
+    } catch (...) {
+        on_fatal_internal_error(dblog, format("database::remove: {}", std::current_exception()));
     }
-  } catch (...) {
-    on_fatal_internal_error(dblog, format("database::remove: {}", std::current_exception()));
-  }
 }
 
 future<> database::detach_column_family(table& cf) {
