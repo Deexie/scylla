@@ -87,6 +87,7 @@ class task_manager;
 
 namespace node_ops {
 class task_manager_module;
+class join_token_ring_task_impl;
 }
 
 namespace service {
@@ -99,6 +100,9 @@ class raft_group0;
 enum class disk_error { regular, commit };
 
 class node_ops_meta_data;
+
+future<> set_gossip_tokens(gms::gossiper& g,
+        const std::unordered_set<dht::token>& tokens, std::optional<cdc::generation_id> cdc_gen_id);
 
 /**
  * This abstraction contains the token/identifier of this node
@@ -358,12 +362,6 @@ private:
     bool should_bootstrap();
     bool is_replacing();
     bool is_first_node();
-    future<> join_token_ring(sharded<db::system_distributed_keyspace>& sys_dist_ks,
-            sharded<service::storage_proxy>& proxy,
-            std::unordered_set<gms::inet_address> initial_contact_nodes,
-            std::unordered_set<gms::inet_address> loaded_endpoints,
-            std::unordered_map<gms::inet_address, sstring> loaded_peer_features,
-            std::chrono::milliseconds);
     future<> start_sys_dist_ks();
 public:
 
@@ -808,6 +806,8 @@ private:
     // Applies received raft snapshot to local state machine persistent storage
     // raft_group0_client::_read_apply_mutex must be held
     future<> merge_topology_snapshot(raft_topology_snapshot snp);
+
+    friend class node_ops::join_token_ring_task_impl;
 };
 
 }
