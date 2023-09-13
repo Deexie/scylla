@@ -50,14 +50,12 @@ protected:
     virtual future<> run() override = 0;
 };
 
-class booststrap_node_task_impl : public node_ops_task_impl {
+class bootstrap_node_task_impl : public node_ops_task_impl {
 public:
-    booststrap_node_task_impl(tasks::task_manager::module_ptr module,
+    bootstrap_node_task_impl(tasks::task_manager::module_ptr module,
             tasks::task_id id,
             unsigned sequence_number,
             std::string scope,
-            std::string keyspace,
-            std::string table,
             std::string entity,
             tasks::task_id parent_id,
             service::storage_service& ss) noexcept
