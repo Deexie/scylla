@@ -553,13 +553,25 @@ start_rebuild_task_impl::start_rebuild_task_impl(tasks::task_manager::module_ptr
 {}
 
 future<> start_rebuild_task_impl::run() {
-    return _ss.run_with_api_lock(sstring("rebuild"), [&source_dc = _source_dc] (service::storage_service& ss) -> future<> {
+    tasks::task_info parent_info{_status.id, _status.shard};
+    return _ss.run_with_api_lock(sstring("rebuild"), [&source_dc = _source_dc, parent_info] (service::storage_service& ss) -> future<> {
         if (ss._raft_topology_change_enabled) {
             co_await ss.raft_rebuild(source_dc);
         } else {
+            auto task = co_await ss.get_task_manager_module().make_and_start_task<gossiper_rebuild_task_impl>(parent_info, "", parent_info.id, ss,
+                std::move(source_dc), ss.is_repair_based_node_ops_enabled(streaming::stream_reason::rebuild));
+            co_await task->done();
+        }
+    });
+}
+
+future<> gossiper_rebuild_task_impl::run() {
+    // FIXME: fix indentation and variables names
+    auto& ss = _ss;
+    auto& source_dc = _source_dc;
             tasks::tmlogger.info("rebuild from dc: {}", source_dc == "" ? "(any dc)" : source_dc);
-            auto tmptr = ss.get_token_metadata_ptr();
-            if (ss.is_repair_based_node_ops_enabled(streaming::stream_reason::rebuild)) {
+            auto tmptr = _ss.get_token_metadata_ptr();
+            if (_rbno_enabled) {
                 co_await ss._repair.local().rebuild_with_repair(tmptr, std::move(source_dc));
             } else {
                 auto streamer = make_lw_shared<dht::range_streamer>(ss._db, ss._stream_manager, tmptr, ss._abort_source,
@@ -582,8 +594,6 @@ future<> start_rebuild_task_impl::run() {
                     std::rethrow_exception(std::move(ep));
                 }
             }
-        }
-    });
 }
 
 start_decommission_task_impl::start_decommission_task_impl(tasks::task_manager::module_ptr module,
