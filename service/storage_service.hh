@@ -93,6 +93,7 @@ class start_rebuild_task_impl;
 class start_decommission_task_impl;
 class start_remove_node_task_impl;
 class gossiper_rebuild_task_impl;
+class gossiper_decommission_task_impl;
 }
 
 namespace service {
@@ -816,6 +817,7 @@ private:
     friend class node_ops::start_decommission_task_impl;
     friend class node_ops::start_remove_node_task_impl;
     friend class node_ops::gossiper_rebuild_task_impl;
+    friend class node_ops::gossiper_decommission_task_impl;
 };
 
 }
