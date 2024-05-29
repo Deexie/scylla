@@ -14,7 +14,7 @@ namespace repair {
 
 future<table_dropped> table_sync_and_check(replica::database& db, service::migration_manager& mm, const table_id& uuid) {
     if (mm.use_raft()) {
-        abort_on_expiry aoe(lowres_clock::now() + std::chrono::seconds{10});
+        abort_on_expiry aoe(lowres_clock::now() + std::chrono::minutes{5});
         auto& as = aoe.abort_source();
         auto sub = mm.get_abort_source().subscribe([&as] () noexcept {
             if (!as.abort_requested()) {
