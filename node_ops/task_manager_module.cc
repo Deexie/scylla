@@ -86,12 +86,6 @@ tasks::task_manager::task_group node_ops_virtual_task::get_group() const noexcep
     return tasks::task_manager::task_group::topology_change_group;
 }
 
-future<std::set<tasks::task_id>> node_ops_virtual_task::get_ids() const {
-    db::system_keyspace& sys_ks = _ss._sys_ks.local();
-    service::topology& topology = _ss._topology_state_machine._topology;
-    co_return boost::copy_range<std::set<tasks::task_id>>(co_await get_entries(sys_ks, topology, get_task_manager().get_task_ttl()) | boost::adaptors::map_keys);
-}
-
 future<bool> node_ops_virtual_task::contains(tasks::task_id task_id) const {
     if (!task_id.uuid().is_timestamp()) {
         // Task id of node ops operation is always a timestamp.
