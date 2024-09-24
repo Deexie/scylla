@@ -69,6 +69,7 @@ public:
     using foreign_task_map = std::unordered_map<task_id, foreign_task_ptr>;
     using module_ptr = shared_ptr<module>;
     using modules = std::unordered_map<std::string, module_ptr>;
+    using virtual_task_hint = std::unordered_map<sstring, sstring>;
 
     struct tasks_collection {
         task_map _local_tasks;
@@ -395,16 +396,16 @@ public:
 
     static future<task_manager::foreign_task_ptr> lookup_task_on_all_shards(sharded<task_manager>& tm, task_id tid);
     // Must be called from shard 0.
-    static future<task_manager::virtual_task_ptr> lookup_virtual_task(task_manager& tm, task_id id);
-    static future<> invoke_on_task(sharded<task_manager>& tm, task_id id, std::function<future<> (task_manager::task_variant)> func);
+    static future<std::pair<task_manager::virtual_task_ptr, task_manager::virtual_task_hint>> lookup_virtual_task(task_manager& tm, task_id id);
+    static future<> invoke_on_task(sharded<task_manager>& tm, task_id id, std::function<future<> (task_manager::task_variant, virtual_task_hint)> func);
     template<typename T>
-    static future<T> invoke_on_task(sharded<task_manager>& tm, task_id id, std::function<future<T> (task_manager::task_variant)> func) {
+    static future<T> invoke_on_task(sharded<task_manager>& tm, task_id id, std::function<future<T> (task_manager::task_variant, virtual_task_hint)> func) {
         std::optional<T> res;
         co_await coroutine::parallel_for_each(boost::irange(0u, smp::count), [&tm, id, &res, &func] (unsigned shard) -> future<> {
             auto local_res = co_await tm.invoke_on(shard, [id, func] (const task_manager& local_tm) -> future<std::optional<T>> {
                 const auto& all_tasks = local_tm.get_local_tasks();
                 if (auto it = all_tasks.find(id); it != all_tasks.end()) {
-                    co_return co_await func(it->second);
+                    co_return co_await func(it->second, {});
                 }
                 co_return std::nullopt;
             });
@@ -416,9 +417,9 @@ public:
         });
         if (!res) {
             res = co_await tm.invoke_on(0, coroutine::lambda([id, &func] (auto& tm_local) -> future<std::optional<T>> {
-                auto task_ptr = co_await lookup_virtual_task(tm_local, id);
+                auto [task_ptr, hint] = co_await lookup_virtual_task(tm_local, id);
                 if (task_ptr) {
-                    co_return co_await func(task_ptr);
+                    co_return co_await func(task_ptr, std::move(hint));
                 }
                 co_return std::nullopt;
             }));

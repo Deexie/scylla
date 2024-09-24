@@ -80,7 +80,7 @@ struct status_helper {
 
 future<status_helper> task_handler::get_status_helper() {
     return task_manager::invoke_on_task(_tm.container(), _id, std::function(
-            [id = _id] (task_manager::task_variant task_v) -> future<status_helper> {
+            [id = _id] (task_manager::task_variant task_v, task_manager::virtual_task_hint hint) -> future<status_helper> {
         return std::visit(overloaded_functor{
             [] (task_manager::task_ptr task) -> future<status_helper> {
                 if (task->is_complete()) {
