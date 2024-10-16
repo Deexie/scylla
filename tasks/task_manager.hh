@@ -256,9 +256,33 @@ public:
 
     class virtual_task : public enable_lw_shared_from_this<virtual_task> {
     public:
+        class history {
+        public:
+            struct virtual_task_status {
+                // FIXME: finished tasks aren't abortable.
+                std::string type;
+                std::string scope;
+                task_manager::task_state state;
+                db_clock::time_point start_time;
+                db_clock::time_point end_time;
+                std::string error;
+                std::string keyspace;
+                std::string table;
+                std::string entity;
+            };
+        public:
+            class impl;
+        private:
+            std::unique_ptr<impl> _impl;
+        public:
+            future<std::vector<task_stats>> get_stats();
+            future<std::optional<task_status>> get_status(task_id id);
+            void add_task(virtual_task_status vt);
+        };
         class impl {
         protected:
             module_ptr _module;
+            sharded<history> _history;
         public:
             impl(module_ptr module) noexcept;
             impl(const impl&) = delete;
