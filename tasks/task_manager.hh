@@ -256,6 +256,7 @@ public:
 
     class virtual_task : public enable_lw_shared_from_this<virtual_task> {
     public:
+        class impl;
         class history {
         public:
             struct virtual_task_status {
@@ -271,18 +272,32 @@ public:
                 std::string entity;
             };
         public:
-            class impl;
+            class impl {
+            protected:
+                virtual_task::impl* _vt;
+            public:
+                virtual future<std::vector<task_stats>> get_stats() = 0;
+                virtual future<std::optional<task_status>> get_status(task_id id) = 0;
+                virtual void add_task(task_id id, virtual_task_status vt) = 0;
+
+                impl(virtual_task::impl* vt) noexcept;
+                impl(const impl&) = delete;
+                impl& operator=(const impl&) = delete;
+                impl(impl&&) = delete;
+                impl& operator=(impl&&) = delete;
+                virtual ~impl() = default;
+            };
         private:
             std::unique_ptr<impl> _impl;
         public:
             future<std::vector<task_stats>> get_stats();
             future<std::optional<task_status>> get_status(task_id id);
-            void add_task(virtual_task_status vt);
+            void add_task(task_id id, virtual_task_status vt);
         };
         class impl {
         protected:
             module_ptr _module;
-            sharded<history> _history;
+            history _history;
         public:
             impl(module_ptr module) noexcept;
             impl(const impl&) = delete;

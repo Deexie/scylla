@@ -12,19 +12,19 @@
 
 namespace tasks {
 
-class task_manager::virtual_task::history::impl {
-public:
-    virtual future<std::vector<task_stats>> get_stats() = 0;
-    virtual future<std::optional<task_status>> get_status(task_id id) = 0;
-    virtual void add_task(virtual_task_status vt) = 0;
+task_manager::virtual_task::history::impl::impl(virtual_task::impl* vt) noexcept : _vt(vt) {}
 
-    impl(module_ptr module) noexcept;
-    impl(const impl&) = delete;
-    impl& operator=(const impl&) = delete;
-    impl(impl&&) = delete;
-    impl& operator=(impl&&) = delete;
-    virtual ~impl() = default;
-};
+future<std::vector<task_stats>> task_manager::virtual_task::history::get_stats() {
+    return _impl->get_stats();
+}
+
+future<std::optional<task_status>> task_manager::virtual_task::history::get_status(task_id id) {
+    return _impl->get_status(id);
+}
+
+void task_manager::virtual_task::history::add_task(task_id id, virtual_task_status vt) {
+    return _impl->add_task(id, std::move(vt));
+}
 
 class default_virtual_task_history : public task_manager::virtual_task::history::impl {
 private:
@@ -32,7 +32,7 @@ private:
 public:
     future<std::vector<task_stats>> get_stats() override;
     future<std::optional<task_status>> get_status(task_id id) override;
-    void add_task(task_manager::virtual_task::history::virtual_task_status vt) override;
+    void add_task(task_id id, task_manager::virtual_task::history::virtual_task_status vt) override;
 };
 
 future<std::vector<task_stats>> default_virtual_task_history::get_stats() {
@@ -68,13 +68,12 @@ future<std::optional<task_status>> default_virtual_task_history::get_status(task
             .keyspace = status.keyspace,
             .table = status.table,
             .entity = status.entity,
-            .children = task_manager::virtual_task::impl::
-        };
-        })
+            .children = task_manager::virtual_task::impl::get_children(_vt->, task_id parent_id)
+        });
     }
 }
 
-void default_virtual_task_history::add_task(task_manager::virtual_task::history::virtual_task_status vt) {
+void default_virtual_task_history::add_task(task_id id, task_manager::virtual_task::history::virtual_task_status vt) {
 
 }
 
@@ -86,8 +85,8 @@ future<std::optional<task_status>> task_manager::virtual_task::history::get_stat
     return _impl->get_status(id);
 }
 
-void task_manager::virtual_task::history::add_task(virtual_task_status vt) {
-    return _impl->add_task(std::move(vt));
+void task_manager::virtual_task::history::add_task(task_id id, virtual_task_status vt) {
+    return _impl->add_task(id, std::move(vt));
 }
 
 }
