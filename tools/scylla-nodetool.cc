@@ -1547,10 +1547,10 @@ void restore_operation(scylla_rest_client& client, const bpo::variables_map& vm)
         writer.EndArray();
         return make_sstring(output.view());
     });
-    const auto restore_res = client.post("/storage_service/restore", std::move(params),
-                                         request_body{"application/json", std::move(sstables_body)});
-    const auto task_id = rjson::to_string_view(restore_res);
     if (vm.contains("nowait")) {
+        const auto restore_res = client.post("/storage_service/restore", std::move(params),
+                                         request_body{"application/json", std::move(sstables_body)});
+        const auto task_id = rjson::to_string_view(restore_res);
         fmt::print(R"(The task id of this operation is {}
 Please use the 'task' subcommands to manage the task.
 )",
@@ -1558,9 +1558,9 @@ Please use the 'task' subcommands to manage the task.
         return;
     }
 
-    const auto url = seastar::format("/task_manager/wait_task/{}", task_id);
-    const auto wait_res = client.get(url);
-    const auto& status = wait_res.GetObject();
+    const auto restore_res = client.post("/storage_service/restore_and_wait", std::move(params),
+                                         request_body{"application/json", std::move(sstables_body)});
+    const auto& status = restore_res.GetObject();
     auto state = rjson::to_string_view(status["state"]);
     fmt::print("{}", state);
     int exit_code = EXIT_SUCCESS;
