@@ -410,9 +410,9 @@ void backup_operation(scylla_rest_client& client, const bpo::variables_map& vm) 
     if (vm.contains("snapshot")) {
         params["snapshot"] = vm["snapshot"].as<sstring>();
     }
-    const auto backup_res = client.post("/storage_service/backup", std::move(params));
-    const auto task_id = rjson::to_string_view(backup_res);
     if (vm.contains("nowait")) {
+        const auto backup_res = client.post("/storage_service/backup", std::move(params));
+        const auto task_id = rjson::to_string_view(backup_res);
         fmt::print(R"(The task id of this operation is {}
 Please use the 'task' subcommands to manage the task.
 )",
@@ -420,9 +420,8 @@ Please use the 'task' subcommands to manage the task.
         return;
     }
 
-    const auto url = seastar::format("/task_manager/wait_task/{}", task_id);
-    const auto wait_res = client.get(url);
-    const auto& status = wait_res.GetObject();
+    const auto backup_res = client.post("/storage_service/backup_and_wait", std::move(params));
+    const auto& status = backup_res.GetObject();
     auto state = rjson::to_string_view(status["state"]);
     fmt::print("{}", state);
     int exit_code = EXIT_SUCCESS;
