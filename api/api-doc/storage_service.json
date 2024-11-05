@@ -887,6 +887,74 @@
           ]
       },
       {
+         "path":"/storage_service/restore_and_wait",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Copies SSTables from a designated bucket in object storage to a specified keyspace",
+               "$ref":"#/task_manager/task_status",
+               "nickname":"start_restore_and_wait",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"endpoint",
+                     "description":"ID of the configured object storage endpoint to copy SSTables from",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"bucket",
+                     "description":"Name of the bucket to read SSTables from",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"prefix",
+                     "description":"The prefix of the object keys for the backuped SSTables",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "in": "body",
+                     "name": "sstables",
+                     "description": "The list of the object keys of the TOC component of the SSTables to be restored",
+                     "required":true,
+                     "schema" :{
+                        "type": "array",
+                        "items": {
+                           "type": "string"
+                        }
+                     }
+                  },
+                  {
+                     "name":"keyspace",
+                     "description":"Name of a keyspace to copy SSTables to",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"table",
+                     "description":"Name of a table to copy SSTables to",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  }
+               ]
+            }
+         ]
+      },
+      {
          "path":"/storage_service/keyspace_compaction/{keyspace}",
          "operations":[
             {

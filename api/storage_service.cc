@@ -12,6 +12,7 @@
 #include "api/api-doc/storage_service.json.hh"
 #include "api/api-doc/storage_proxy.json.hh"
 #include "api/scrub_status.hh"
+#include "api/task_manager.hh"
 #include "db/config.hh"
 #include "db/schema_tables.hh"
 #include "utils/hash.hh"
@@ -55,6 +56,7 @@
 #include "db/view/view_builder.hh"
 #include "utils/rjson.hh"
 #include "utils/user_provided_param.hh"
+#include "tasks/task_handler.hh"
 
 using namespace seastar::httpd;
 using namespace std::chrono_literals;
@@ -511,11 +513,32 @@ void set_sstables_loader(http_context& ctx, routes& r, sharded<sstables_loader>&
         co_return json::json_return_type(fmt::to_string(task_id));
     });
 
+    ss::start_restore_and_wait.set(r, [&sst_loader] (std::unique_ptr<http::request> req) -> future<json::json_return_type> {
+        auto endpoint = req->get_query_param("endpoint");
+        auto keyspace = req->get_query_param("keyspace");
+        auto table = req->get_query_param("table");
+        auto bucket = req->get_query_param("bucket");
+        auto prefix = req->get_query_param("prefix");
+
+        // TODO: the http_server backing the API does not use content streaming
+        // should use it for better performance
+        rjson::value parsed = rjson::parse(req->content);
+        if (!parsed.IsArray()) {
+            throw httpd::bad_param_exception("mulformatted sstables in body");
+        }
+        auto sstables = parsed.GetArray() |
+            std::views::transform([] (const auto& s) { return sstring(rjson::to_string_view(s)); }) |
+            std::ranges::to<std::vector>();
+        auto task_status = co_await sst_loader.local().download_new_sstables(keyspace, table, prefix, std::move(sstables), endpoint, bucket);
+        co_return json::json_return_type(make_status(task_status));
+    });
+
 }
 
 void unset_sstables_loader(http_context& ctx, routes& r) {
     ss::load_new_ss_tables.unset(r);
     ss::start_restore.unset(r);
+    ss::start_restore_and_wait.unset(r);
 }
 
 void set_view_builder(http_context& ctx, routes& r, sharded<db::view::view_builder>& vb) {
