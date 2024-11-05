@@ -1819,6 +1819,23 @@ void set_snapshot(http_context& ctx, routes& r, sharded<db::snapshot_ctl>& snap_
         co_return json::json_return_type(fmt::to_string(task_id));
     });
 
+    ss::start_backup_and_wait.set(r, [&snap_ctl] (std::unique_ptr<http::request> req) -> future<json::json_return_type> {
+        auto endpoint = req->get_query_param("endpoint");
+        auto keyspace = req->get_query_param("keyspace");
+        auto table = req->get_query_param("table");
+        auto bucket = req->get_query_param("bucket");
+        auto prefix = req->get_query_param("prefix");
+        auto snapshot_name = req->get_query_param("snapshot");
+        if (snapshot_name.empty()) {
+            // TODO: If missing, snapshot should be taken by scylla, then removed
+            throw httpd::bad_param_exception("The snapshot name must be specified");
+        }
+
+        auto& ctl = snap_ctl.local();
+        auto task_status = co_await ctl.start_backup(std::move(endpoint), std::move(bucket), std::move(prefix), std::move(keyspace), std::move(table), std::move(snapshot_name));
+        co_return json::json_return_type(make_status(task_status));
+    });
+
     cf::get_true_snapshots_size.set(r, [&snap_ctl] (std::unique_ptr<http::request> req) {
         auto [ks, cf] = parse_fully_qualified_cf_name(req->get_path_param("name"));
         return snap_ctl.local().true_snapshots_size(std::move(ks), std::move(cf)).then([] (int64_t res) {
@@ -1841,6 +1858,7 @@ void unset_snapshot(http_context& ctx, routes& r) {
     ss::true_snapshots_size.unset(r);
     ss::scrub.unset(r);
     ss::start_backup.unset(r);
+    ss::start_backup_and_wait.unset(r);
     cf::get_true_snapshots_size.unset(r);
     cf::get_all_true_snapshots_size.unset(r);
 }

@@ -819,6 +819,70 @@
           ]
       },
       {
+         "path":"/storage_service/backup_and_wait",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Copies SSTables from a specified keyspace to a designated bucket in object storage",
+               "$ref":"#/task_manager/task_status",
+               "nickname":"start_backup_and_wait",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"endpoint",
+                     "description":"ID of the configured object storage endpoint to copy sstables to",
+                     "required":true,
+                     "allowMultiple":false,
+                         "type":"string",
+                         "paramType":"query"
+                  },
+                  {
+                     "name":"bucket",
+                     "description":"Name of the bucket to backup sstables to",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"prefix",
+                     "description":"The prefix of the objects for the backuped sstables",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"keyspace",
+                     "description":"Name of a keyspace to copy sstables from",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"table",
+                     "description":"Name of a table to copy sstables from",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"snapshot",
+                     "description":"Name of a snapshot to copy sstables from",
+                     "required":false,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  }
+               ]
+            }
+         ]
+      },
+      {
           "path":"/storage_service/restore",
           "operations":[
               {
