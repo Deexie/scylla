@@ -507,7 +507,7 @@ void set_sstables_loader(http_context& ctx, routes& r, sharded<sstables_loader>&
         auto sstables = parsed.GetArray() |
             std::views::transform([] (const auto& s) { return sstring(rjson::to_string_view(s)); }) |
             std::ranges::to<std::vector>();
-        auto task_id = co_await sst_loader.local().download_new_sstables(keyspace, table, prefix, std::move(sstables), endpoint, bucket);
+        auto task_id = co_await sst_loader.local().download_new_sstables_async(keyspace, table, prefix, std::move(sstables), endpoint, bucket);
         co_return json::json_return_type(fmt::to_string(task_id));
     });
 

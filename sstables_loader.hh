@@ -88,7 +88,16 @@ public:
     /**
      * Download new SSTables not currently tracked by the system from object store
      */
-    future<tasks::task_id> download_new_sstables(sstring ks_name, sstring cf_name,
+    future<tasks::task_status> download_new_sstables(sstring ks_name, sstring cf_name,
+            sstring prefix, std::vector<sstring> sstables,
+            sstring endpoint, sstring bucket);
+
+    future<tasks::task_id> download_new_sstables_async(sstring ks_name, sstring cf_name,
+            sstring prefix, std::vector<sstring> sstables,
+            sstring endpoint, sstring bucket);
+
+private:
+    future<tasks::task_manager::task_ptr> download_new_sstables_helper(sstring ks_name, sstring cf_name,
             sstring prefix, std::vector<sstring> sstables,
             sstring endpoint, sstring bucket);
 

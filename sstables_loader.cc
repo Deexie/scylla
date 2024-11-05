@@ -8,6 +8,7 @@
 
 #include <fmt/ranges.h>
 #include <seastar/core/coroutine.hh>
+#include <seastar/coroutine/as_future.hh>
 #include <seastar/coroutine/switch_to.hh>
 #include <seastar/coroutine/parallel_for_each.hh>
 #include <seastar/rpc/rpc.hh>
@@ -22,6 +23,7 @@
 #include "readers/mutation_fragment_v1_stream.hh"
 #include "locator/abstract_replication_strategy.hh"
 #include "message/messaging_service.hh"
+#include "tasks/task_handler.hh"
 
 #include <cfloat>
 #include <algorithm>
@@ -524,13 +526,28 @@ future<> sstables_loader::stop() {
     co_await _task_manager_module->stop();
 }
 
-future<tasks::task_id> sstables_loader::download_new_sstables(sstring ks_name, sstring cf_name,
+future<tasks::task_manager::task_ptr> sstables_loader::download_new_sstables_helper(sstring ks_name, sstring cf_name,
             sstring prefix, std::vector<sstring> sstables,
             sstring endpoint, sstring bucket) {
     if (!_storage_manager.is_known_endpoint(endpoint)) {
         throw std::invalid_argument(format("endpoint {} not found", endpoint));
     }
     llog.info("Restore sstables from {}({}) to {}", endpoint, prefix, ks_name);
-    auto task = co_await _task_manager_module->make_and_start_task<download_task_impl>({}, container(), std::move(endpoint), std::move(bucket), std::move(ks_name), std::move(cf_name), std::move(prefix), std::move(sstables));
+    co_return co_await _task_manager_module->make_and_start_task<download_task_impl>({}, container(), std::move(endpoint), std::move(bucket), std::move(ks_name), std::move(cf_name), std::move(prefix), std::move(sstables));
+}
+
+future<tasks::task_status> sstables_loader::download_new_sstables(sstring ks_name, sstring cf_name,
+            sstring prefix, std::vector<sstring> sstables,
+            sstring endpoint, sstring bucket) {
+    auto task = co_await download_new_sstables_helper(std::move(ks_name), std::move(cf_name), std::move(prefix), std::move(sstables), std::move(endpoint), std::move(bucket));
+    auto f = co_await coroutine::as_future(task->done());
+    f.ignore_ready_future(); // Return failed status instead of propagating exception.
+    co_return co_await tasks::task_handler::get_task_status(task);
+}
+
+future<tasks::task_id> sstables_loader::download_new_sstables_async(sstring ks_name, sstring cf_name,
+            sstring prefix, std::vector<sstring> sstables,
+            sstring endpoint, sstring bucket) {
+    auto task = co_await download_new_sstables_helper(std::move(ks_name), std::move(cf_name), std::move(prefix), std::move(sstables), std::move(endpoint), std::move(bucket));
     co_return task->id();
 }
