@@ -9,6 +9,7 @@
 #pragma once
 
 #include <seastar/core/sharded.hh>
+#include "api/api-doc/task_manager.json.hh"
 #include "api/api_init.hh"
 #include "db/config.hh"
 
@@ -18,6 +19,7 @@ namespace tasks {
 
 namespace api {
 
+httpd::task_manager_json::task_status make_status(tasks::task_status status);
 void set_task_manager(http_context& ctx, httpd::routes& r, sharded<tasks::task_manager>& tm, db::config& cfg);
 void unset_task_manager(http_context& ctx, httpd::routes& r);
 
