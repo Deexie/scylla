@@ -18,7 +18,7 @@ namespace tasks {
 
 using task_status_variant = std::variant<tasks::task_manager::foreign_task_ptr, tasks::task_manager::task::task_essentials>;
 
-static future<task_status> get_task_status(task_manager::task_ptr task) {
+future<task_status> task_handler::get_task_status(task_manager::task_ptr task) {
     auto broadcast_address = task->get_module()->get_task_manager().get_broadcast_address();
     auto local_task_status = task->get_status();
     auto status = task_status{
@@ -59,7 +59,7 @@ static future<task_status> get_task_status(task_manager::task_ptr task) {
 
 static future<task_status> get_foreign_task_status(const task_manager::foreign_task_ptr& task) {
     co_return co_await smp::submit_to(task.get_owner_shard(), [t = co_await task.copy()] () mutable {
-        return get_task_status(t.release());
+        return task_handler::get_task_status(t.release());
     });
 }
 

@@ -68,6 +68,8 @@ public:
     future<task_status> wait_for_task(std::optional<std::chrono::seconds> timeout);
     future<utils::chunked_vector<task_status>> get_status_recursively(bool local);
     future<> abort();
+
+    static future<task_status> get_task_status(task_manager::task_ptr task);
 private:
     future<status_helper> get_status_helper();
 };
