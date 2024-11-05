@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <seastar/core/coroutine.hh>
+#include <seastar/coroutine/as_future.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 #include <seastar/coroutine/switch_to.hh>
 #include <seastar/coroutine/parallel_for_each.hh>
@@ -21,6 +22,7 @@
 #include "replica/database.hh"
 #include "replica/global_table_ptr.hh"
 #include "sstables/sstables_manager.hh"
+#include "tasks/task_handler.hh"
 
 logging::logger snap_log("snapshots");
 
@@ -138,11 +140,9 @@ future<int64_t> snapshot_ctl::true_snapshots_size() {
     }));
 }
 
-future<tasks::task_id> snapshot_ctl::start_backup(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name) {
+future<tasks::task_manager::task_ptr> snapshot_ctl::start_backup_helper(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name) {
     if (this_shard_id() != 0) {
-        co_return co_await container().invoke_on(0, [&](auto& local) {
-            return local.start_backup(endpoint, bucket, prefix, keyspace, table, snapshot_name);
-        });
+        throw std::runtime_error("start_backup_helper need to be called on shard 0");
     }
 
     co_await coroutine::switch_to(_config.backup_sched_group);
@@ -175,8 +175,31 @@ future<tasks::task_id> snapshot_ctl::start_backup(sstring endpoint, sstring buck
     auto dir = (local_storage_options.dir /
                 sstables::snapshots_dir /
                 std::string_view(snapshot_name));
-    auto task = co_await _task_manager_module->make_and_start_task<::db::snapshot::backup_task_impl>(
+    co_return co_await _task_manager_module->make_and_start_task<::db::snapshot::backup_task_impl>(
         {}, *this, std::move(cln), std::move(bucket), std::move(prefix), keyspace, dir);
+}
+
+future<tasks::task_status> snapshot_ctl::start_backup(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name) {
+    if (this_shard_id() != 0) {
+        co_return co_await container().invoke_on(0, [&](auto& local) {
+            return local.start_backup(endpoint, bucket, prefix, keyspace, table, snapshot_name);
+        });
+    }
+
+    auto task = co_await start_backup_helper(std::move(endpoint), std::move(bucket), std::move(prefix), std::move(keyspace), std::move(table), std::move(snapshot_name));
+    auto f = co_await coroutine::as_future(task->done());
+    f.ignore_ready_future(); // Return failed status instead of propagating exception.
+    co_return co_await tasks::task_handler::get_task_status(task);
+}
+
+future<tasks::task_id> snapshot_ctl::start_backup_async(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name) {
+    if (this_shard_id() != 0) {
+        co_return co_await container().invoke_on(0, [&](auto& local) {
+            return local.start_backup_async(endpoint, bucket, prefix, keyspace, table, snapshot_name);
+        });
+    }
+
+    auto task = co_await start_backup_helper(std::move(endpoint), std::move(bucket), std::move(prefix), std::move(keyspace), std::move(table), std::move(snapshot_name));
     co_return task->id();
 }
 

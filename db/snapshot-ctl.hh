@@ -106,8 +106,12 @@ public:
      */
     future<> clear_snapshot(sstring tag, std::vector<sstring> keyspace_names, sstring cf_name);
 
-    future<tasks::task_id> start_backup(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name);
-
+    future<tasks::task_status> start_backup(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name);
+    future<tasks::task_id> start_backup_async(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name);
+private:
+    // Needs to be called on shard 0.
+    future<tasks::task_manager::task_ptr> start_backup_helper(sstring endpoint, sstring bucket, sstring prefix, sstring keyspace, sstring table, sstring snapshot_name);
+public:
     future<std::unordered_map<sstring, db_snapshot_details>> get_snapshot_details();
 
     future<int64_t> true_snapshots_size();
