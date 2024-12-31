@@ -1754,6 +1754,7 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
                 }
             }
             auto nr_ranges = desired_ranges.size();
+            utils::get_local_injector().inject("repair_service_bootstrap_with_repair_wait", utils::wait_for_message(10s)).get();
             sync_data_using_repair(keyspace_name, erm, std::move(desired_ranges), std::move(range_sources), reason, nullptr).get();
             rlogger.info("bootstrap_with_repair: finished with keyspace={}, nr_ranges={}", keyspace_name, nr_ranges * nr_tables);
         }
