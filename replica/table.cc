@@ -1714,6 +1714,7 @@ table::stop() {
         _sstables = make_compound_sstable_set();
     }));
     _cache.refresh_snapshot();
+    _erm_update_cv.broadcast();
 }
 static seastar::metrics::label_instance node_table_metrics("__per_table", "node");
 void table::set_metrics() {
@@ -2715,6 +2716,7 @@ void table::update_effective_replication_map(locator::effective_replication_map_
     }
 
     recalculate_tablet_count_stats();
+    _erm_update_cv.broadcast();
 }
 
 void table::recalculate_tablet_count_stats() {

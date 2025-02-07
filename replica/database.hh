@@ -445,6 +445,7 @@ private:
     mutable table_stats _stats;
     mutable db::view::stats _view_stats;
     mutable row_locker::stats _row_locker_stats;
+    condition_variable _erm_update_cv;
 
     uint64_t _failed_counter_applies_to_memtable = 0;
 
@@ -721,6 +722,10 @@ public:
 
     uint64_t failed_counter_applies_to_memtable() const {
         return _failed_counter_applies_to_memtable;
+    }
+
+    condition_variable& get_erm_update_cv() noexcept {
+        return _erm_update_cv;
     }
 
     // This function should be called when this column family is ready for writes, IOW,

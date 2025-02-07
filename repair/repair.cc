@@ -1032,6 +1032,50 @@ void repair::shard_repair_task_impl::release_resources() noexcept {
     nodes_down = {};
 }
 
+void repair::shard_repair_task_impl::start_erm_update_listener() {
+    (void)[] (repair::shard_repair_task_impl& this_task) -> future<> {
+        auto& db = this_task.db.local();
+        auto module = this_task._module;
+        auto table_id =  this_task.table_ids[0];
+        auto task_id = this_task._status.id;
+        auto current_version = this_task.erm->get_token_metadata().get_version();
+        
+        while (true) {
+            if (module->abort_source().abort_requested()) {
+                // Shutdown.
+                break;
+            }
+
+            auto table = db.get_tables_metadata().get_table_if_exists(table_id);
+            if (!table || table->async_gate().is_closed()) {
+                // Table dropped or stopped.
+                break;
+            }
+
+            while (table->get_effective_replication_map()->get_token_metadata().get_version() == current_version) {
+                co_await table->get_erm_update_cv().when();
+            }
+            // TODO spontaniczne wybudzenia. while + broken
+
+            auto new_erm = table->get_effective_replication_map();
+
+            auto it = module->get_local_tasks().find(task_id);
+            if (it == module->get_local_tasks().end() || !this_task.erm) {
+                // Task was unregistered or finished.
+                break;
+            }
+            auto task_keepalive = *it->second;
+            if (true) { // TODO cmp; range nie musi pokrywac tableta.
+                this_task.erm = new_erm;
+            } else {
+                // The task needs to keep current version.
+                break;
+            }
+        }
+    }(*this);
+    // TODO then wrapped
+}
+
 future<> repair::shard_repair_task_impl::do_repair_ranges() {
     // Repair tables in the keyspace one after another
     SCYLLA_ASSERT(table_names().size() == table_ids.size());

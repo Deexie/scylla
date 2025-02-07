@@ -221,6 +221,8 @@ public:
     size_t ranges_size() const noexcept;
 
     virtual void release_resources() noexcept override;
+private:
+    void start_erm_update_listener();
 protected:
     future<> do_repair_ranges();
     virtual future<tasks::task_manager::task::progress> get_progress() const override;
