@@ -3218,7 +3218,7 @@ public:
     }
 
     // Allocates new tablets for a table which is not co-located with another table.
-    tablet_map allocate_tablets_for_new_base_table(const tablet_aware_replication_strategy* tablet_rs, const schema& s) {
+    tablet_map allocate_tablets_for_new_base_table(const keyspace_metadata& ksm, const tablet_aware_replication_strategy* tablet_rs, const schema& s) {
         auto tm = _db.get_shared_token_metadata().get();
         auto lb = make_load_balancer(tm, nullptr, {});
         auto plan = lb.make_sizing_plan(s.shared_from_this(), tablet_rs).get();
@@ -3228,7 +3228,26 @@ public:
                     table_plan.target_tablet_count_aligned, s.ks_name(), s.cf_name());
         }
         auto tablet_count = table_plan.target_tablet_count_aligned;
-        auto map = tablet_rs->allocate_tablets_for_new_table(s.shared_from_this(), tm, tablet_count).get();
+
+        std::optional<std::unordered_map<sstring, std::set<sstring>>> dc_racks;
+        if (_db.get_config().rf_rack_valid_keyspaces()) {
+            if (!ksm.tables().empty()) {
+                dc_racks = std::unordered_map<sstring, std::set<sstring>>();
+                auto first_table_id = ksm.tables().front()->id();
+                auto first_table_tablet_map = tm->tablets().get_tablet_map(first_table_id);
+                auto first_table_tablet_info = first_table_tablet_map.get_tablet_info(first_table_tablet_map.first_tablet());
+                for (auto& replica : first_table_tablet_info.replicas) {
+                    auto node = tm->get_topology().find_node(replica.host);
+                    if (!node) {
+                        on_internal_error(lblogger, format("Node {} not found in topology", replica.host));
+                    }
+                    (*dc_racks)[node->dc()].insert(node->rack());
+                }
+            } else {
+                dc_racks = tablet_rs->choose_racks(s.shared_from_this(), tm, tablet_map(2)).get();
+            }
+        }
+        auto map = tablet_rs->allocate_tablets_for_new_table(s.shared_from_this(), tm, tablet_count, std::move(dc_racks)).get();
         return map;
     }
 
@@ -3263,7 +3282,7 @@ public:
                 if (auto it = new_cfms_map.find(base_id); it != new_cfms_map.end()) {
                     const auto& s = *it->second;
                     lblogger.debug("Creating tablets for {}.{} id={}", s.ks_name(), s.cf_name(), s.id());
-                    auto base_map = allocate_tablets_for_new_base_table(tablet_rs, s);
+                    auto base_map = allocate_tablets_for_new_base_table(ksm, tablet_rs, s);
                     muts.emplace_back(tablet_map_to_mutation(std::move(base_map), s.id(), s.ks_name(), s.cf_name(), ts, _db.features()).get());
                 }
 
