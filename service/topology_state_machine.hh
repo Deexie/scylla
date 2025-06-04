@@ -25,6 +25,10 @@ namespace db {
     class system_keyspace;
 }
 
+namespace locator {
+struct endpoint_dc_rack;
+}
+
 namespace service {
 
 enum class node_state: uint16_t {
@@ -115,6 +119,8 @@ struct ongoing_rf_change_data {
     racks_for_dc_map added_racks_for_dc;
     racks_for_dc_map removed_racks_for_dc;
     bool rollback = false;
+
+    std::optional<locator::endpoint_dc_rack> maybe_get_added_dc_rack();
 };
 
 struct topology {
