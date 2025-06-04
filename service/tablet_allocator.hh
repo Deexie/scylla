@@ -10,9 +10,11 @@
 
 #include "replica/database_fwd.hh"
 #include "locator/tablets.hh"
+#include "seastar/util/bool_class.hh"
 #include "service/topology_state_machine.hh"
 #include "tablet_allocator_fwd.hh"
 #include "locator/token_metadata_fwd.hh"
+#include "locator/types.hh"
 #include <seastar/core/metrics.hh>
 
 namespace service {
@@ -136,6 +138,29 @@ struct tablet_repair_plan {
     }
 };
 
+enum class keyspace_rf_change_state {
+	empty,    	    // No ongoing rf change.
+	new_step,  	    // Start of a new step.
+	continue_step, 	// Continuation of a current step.
+	done,     	    // All steps are done.
+	failed,   	    // All steps are rolled back.
+};
+
+using removes_replica = bool_class<class removes_replica_tag>;
+
+struct planned_replica {
+    locator::global_tablet_id gid;
+    locator::tablet_replica replica;
+};
+
+struct keyspace_rf_change_plan {
+	sstring ks_name;
+    keyspace_rf_change_state state = keyspace_rf_change_state::empty;
+    locator::endpoint_dc_rack replica;
+    removes_replica removes_replica;
+	std::vector<planned_replica> tablets;
+};
+
 class migration_plan {
 public:
     using migrations_vector = utils::chunked_vector<tablet_migration_info>;
@@ -143,6 +168,7 @@ private:
     migrations_vector _migrations;
     table_resize_plan _resize_plan;
     tablet_repair_plan _repair_plan;
+    keyspace_rf_change_plan _rf_change_plan;
     bool _has_nodes_to_drain = false;
 public:
     /// Returns true iff there are decommissioning nodes which own some tablet replicas.
@@ -186,6 +212,12 @@ public:
 
     void set_repair_plan(tablet_repair_plan repair) {
         _repair_plan = std::move(repair);
+    }
+
+    const keyspace_rf_change_plan& rf_change_plan() const { return _rf_change_plan; }
+
+    void set_rf_change_plan(keyspace_rf_change_plan rf_change_plan) {
+        _rf_change_plan = std::move(rf_change_plan);
     }
 
     future<std::unordered_set<locator::global_tablet_id>> get_migration_tablet_ids() const;
