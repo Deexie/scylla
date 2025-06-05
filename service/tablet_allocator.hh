@@ -159,6 +159,8 @@ struct keyspace_rf_change_plan {
     locator::endpoint_dc_rack replica;
     removes_replica removes_replica;
 	std::vector<planned_replica> tablets;
+
+    size_t size() const { return tablets.size(); }
 };
 
 class migration_plan {
@@ -175,11 +177,12 @@ public:
     bool has_nodes_to_drain() const { return _has_nodes_to_drain; }
 
     const migrations_vector& migrations() const { return _migrations; }
-    bool empty() const { return _migrations.empty() && !_resize_plan.size() && !_repair_plan.size();}
-    size_t size() const { return _migrations.size() + _resize_plan.size() + _repair_plan.size(); }
+    bool empty() const { return _migrations.empty() && !_resize_plan.size() && !_repair_plan.size() && !_rf_change_plan.size(); }
+    size_t size() const { return _migrations.size() + _resize_plan.size() + _repair_plan.size() + _rf_change_plan.size(); }
     size_t tablet_migration_count() const { return _migrations.size(); }
     size_t resize_decision_count() const { return _resize_plan.size(); }
     size_t tablet_repair_count() const { return _repair_plan.size(); }
+    size_t keyspace_rf_change_count() const { return _rf_change_plan.size(); }
 
     void add(tablet_migration_info info) {
         _migrations.emplace_back(std::move(info));
