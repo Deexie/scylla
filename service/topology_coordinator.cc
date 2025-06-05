@@ -9,13 +9,16 @@
 #include <chrono>
 #include <fmt/ranges.h>
 
+#include <optional>
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/on_internal_error.hh>
 #include <seastar/coroutine/as_future.hh>
 #include <seastar/coroutine/maybe_yield.hh>
 #include <seastar/coroutine/parallel_for_each.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/sharded.hh>
+#include <seastar/core/sstring.hh>
 #include <seastar/core/with_scheduling_group.hh>
 #include <seastar/util/noncopyable_function.hh>
 
@@ -24,6 +27,8 @@
 #include "auth/service.hh"
 #include "cdc/generation.hh"
 #include "cql3/statements/ks_prop_defs.hh"
+#include "db/config.hh"
+#include "db/schema_tables.hh"
 #include "db/system_distributed_keyspace.hh"
 #include "db/system_keyspace.hh"
 #include "dht/boot_strapper.hh"
@@ -1227,6 +1232,196 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
                 .build());
     }
 
+    std::optional<sstring> validate_keyspace(const sstring& ks_name, const cql3::statements::ks_prop_defs& new_ks_props) {
+        try {
+            if (!_db.has_keyspace(ks_name)) {
+                return "Can't ALTER keyspace " + ks_name + ", keyspace doesn't exist";
+            }
+            const sstring strategy_name = "NetworkTopologyStrategy";
+            locator::replication_strategy_config_options repl_opts{
+                .replication = new_ks_props.get_replication_options(),
+            };
+            repl_opts.replication.erase(cql3::statements::ks_prop_defs::REPLICATION_STRATEGY_CLASS_KEY);
+            auto ks_md = keyspace_metadata::new_keyspace(ks_name, strategy_name, repl_opts,
+                                                            new_ks_props.get_initial_tablets(std::nullopt),
+                                                            new_ks_props.get_durable_writes(), new_ks_props.get_storage_options());
+            _db.validate_keyspace_update(*ks_md);
+            return std::nullopt;
+        } catch (...) {
+            return format("{}", std::current_exception());
+        }
+    }
+
+    void generate_rf_change_update(utils::chunked_vector<canonical_mutation>& out, const group0_guard& guard, planned_replica tablet_replica, removes_replica removes_replica) {
+        auto& tmap = get_token_metadata_ptr()->tablets().get_tablet_map(tablet_replica.gid.table);
+        auto replicas = tmap.get_tablet_info(tablet_replica.gid.tablet).replicas;
+        if (removes_replica) {
+            replicas.erase(std::remove(replicas.begin(), replicas.end(), tablet_replica.replica), replicas.end());
+        } else {
+            replicas.emplace_back(tablet_replica.replica);
+        }
+        auto last_token = tmap.get_last_token(tablet_replica.gid.tablet);
+        out.emplace_back(
+            replica::tablet_mutation_builder(guard.write_timestamp(), tablet_replica.gid.table)
+                .set_new_replicas(last_token, replicas)
+                .set_stage(last_token, locator::tablet_transition_stage::allow_write_both_read_old)
+                .set_transition(last_token, locator::choose_rebuild_transition_kind(_feature_service))
+                .build());
+    }
+
+    void generate_rf_change_request_finish(utils::chunked_vector<canonical_mutation>& out, const group0_guard& guard, std::optional<sstring> error = std::nullopt) {
+        // Remove ongoing request.
+        auto request_id = _topo_sm._topology.rf_change_requests_queue[0];
+        out.emplace_back(
+            topology_mutation_builder(guard.write_timestamp())
+                .drop_first_scheduled_rf_change_request_id(_topo_sm._topology.rf_change_requests_queue)
+                .del_ongoing_rf_change_data()
+                .build());
+
+        // Mark request as done/failed.
+        out.emplace_back(
+            topology_request_tracking_mutation_builder(request_id)
+                .done(std::move(error))
+                .build());
+
+    }
+
+    void generate_keyspace_schema_update(utils::chunked_vector<canonical_mutation>& out, const group0_guard& guard, lw_shared_ptr<keyspace_metadata> ks_md) {
+        auto schema_muts = db::schema_tables::make_create_keyspace_mutations(_db.features().cluster_schema_features(), ks_md, guard.write_timestamp());
+        for (auto& m: schema_muts) {
+            out.emplace_back(m);
+        }
+    }
+
+    future<> generate_rf_change_updates(utils::chunked_vector<canonical_mutation>& out, const group0_guard& guard, keyspace_rf_change_plan rf_change_plan) {
+        switch (rf_change_plan.state) {
+            case service::keyspace_rf_change_state::empty: {
+                // Process new keyspace RF change request.
+                if (!_topo_sm._topology.ongoing_rf_change_data && !_topo_sm._topology.rf_change_requests_queue.empty()) {
+                    auto entry = co_await _sys_ks.get_topology_request_entry(_topo_sm._topology.rf_change_requests_queue[0], true);
+                    auto ks_name = entry.new_keyspace_rf_change_ks_name.value();
+                    auto saved_ks_props = entry.new_keyspace_rf_change_data.value();
+                    cql3::statements::ks_prop_defs new_ks_props{std::map<sstring, sstring>{saved_ks_props.begin(), saved_ks_props.end()}};
+
+                    auto error = validate_keyspace(ks_name, new_ks_props);
+                    if (error.has_value()) {
+                        generate_rf_change_request_finish(out, guard, error);
+                    } else {
+                        ongoing_rf_change_data new_ongoing_rf_change{
+                            .ks_name = entry.new_keyspace_rf_change_ks_name.value(),
+                            .new_ks_props = entry.new_keyspace_rf_change_data.value(),
+                            .added_dc_racks = {},
+                            .removed_dc_racks = {},
+                            .rollback = false
+                        };
+                        out.emplace_back(
+                            topology_mutation_builder(guard.write_timestamp())
+                                .set_ongoing_rf_change_data(std::move(new_ongoing_rf_change))
+                                .build());
+
+                        const auto& metadata = _db.find_keyspace(rf_change_plan.ks_name).metadata();
+                        auto repl_opts = metadata->strategy_options();
+                        repl_opts.previous_replication = repl_opts.replication;
+                        repl_opts.next_replication = new_ks_props.get_replication_options();
+                        repl_opts.next_replication.erase(cql3::statements::ks_prop_defs::REPLICATION_STRATEGY_CLASS_KEY);
+                        auto ks_md = keyspace_metadata::new_keyspace(rf_change_plan.ks_name, metadata->strategy_name(), repl_opts,
+                                                            metadata->initial_tablets(), metadata->durable_writes(), metadata->get_storage_options());
+                        generate_keyspace_schema_update(out, guard, std::move(ks_md));
+                    }
+                }
+                break;
+            }
+            case service::keyspace_rf_change_state::new_step: {
+                // Update added/removed replicas.
+                auto new_ongoing_rf_change_data = _topo_sm._topology.ongoing_rf_change_data.value();
+                if (rf_change_plan.removes_replica) {
+                    if (new_ongoing_rf_change_data.rollback) {
+                        if (rf_change_plan.replica != new_ongoing_rf_change_data.added_dc_racks.back()) {
+                            on_internal_error(rtlogger, fmt::format("Invalid rf change plan: rollback replica (dc = {}; rack = {}) does not match the last added replica (dc = {}; rack = {})",
+                                rf_change_plan.replica.dc, rf_change_plan.replica.rack, new_ongoing_rf_change_data.added_dc_racks.back().dc, new_ongoing_rf_change_data.added_dc_racks.back().rack));
+                        }
+                        new_ongoing_rf_change_data.added_dc_racks.pop_back();
+                    }
+                    new_ongoing_rf_change_data.removed_dc_racks.push_back(rf_change_plan.replica);
+                } else {
+                    new_ongoing_rf_change_data.added_dc_racks.push_back(rf_change_plan.replica);
+                }
+                out.emplace_back(
+                        topology_mutation_builder(guard.write_timestamp())
+                            .set_ongoing_rf_change_data(std::move(new_ongoing_rf_change_data))
+                            .build());
+
+                // Update keyspace metadata.
+                if (_db.has_keyspace(rf_change_plan.ks_name)) {
+                    auto& keyspace = _db.find_keyspace(rf_change_plan.ks_name);
+                    const auto& metadata = keyspace.metadata();
+                    auto repl_opts = metadata->strategy_options();
+                    const auto& strategy = dynamic_cast<const locator::network_topology_strategy&>(keyspace.get_replication_strategy());
+                    size_t new_rf = strategy.get_replication_factor(rf_change_plan.replica.dc);
+                    if (new_ongoing_rf_change_data.rollback || rf_change_plan.removes_replica) {
+                        if (new_rf == 0) {
+                            on_internal_error(rtlogger, "Invalid RF change: attempted to decrease 0");
+                        }
+                        --new_rf;
+                    } else {
+                        ++new_rf;
+                    }
+                    repl_opts.replication[rf_change_plan.replica.dc] = std::to_string(new_rf);
+
+                    auto ks_md = keyspace_metadata::new_keyspace(rf_change_plan.ks_name, metadata->strategy_name(), repl_opts,
+                        metadata->initial_tablets(), metadata->durable_writes(), metadata->get_storage_options());
+                    generate_keyspace_schema_update(out, guard, std::move(ks_md));
+                }
+            }
+            [[fallthrough]];
+            case service::keyspace_rf_change_state::continue_step: {
+                // Tablet transitions.
+                for (const auto& tablet_replica : rf_change_plan.tablets) {
+                    generate_rf_change_update(out, guard, tablet_replica, rf_change_plan.removes_replica);
+                }
+                break;
+            }
+            case service::keyspace_rf_change_state::done: {
+                generate_rf_change_request_finish(out, guard);
+
+                // Update keyspace metadata.
+                if (_db.has_keyspace(rf_change_plan.ks_name)) {
+                    cql3::statements::ks_prop_defs new_ks_props{std::map<sstring, sstring>{_topo_sm._topology.ongoing_rf_change_data->new_ks_props.begin(), _topo_sm._topology.ongoing_rf_change_data->new_ks_props.end()}};
+                    auto& keyspace = _db.find_keyspace(rf_change_plan.ks_name);
+                    const auto& metadata = keyspace.metadata();
+                    auto repl_opts = metadata->strategy_options();
+                    repl_opts.replication = std::move(repl_opts.next_replication);
+                    repl_opts.previous_replication = {};
+                    repl_opts.next_replication = {};
+
+                    auto ks_md = keyspace_metadata::new_keyspace(rf_change_plan.ks_name, metadata->strategy_name(), repl_opts,
+                                                            new_ks_props.get_initial_tablets(std::nullopt),
+                                                            new_ks_props.get_durable_writes(), new_ks_props.get_storage_options());
+                    generate_keyspace_schema_update(out, guard, std::move(ks_md));
+                }
+                break;
+            }
+            case service::keyspace_rf_change_state::failed: {
+                generate_rf_change_request_finish(out, guard, "Keyspace RF change failed");
+
+                // Update keyspace metadata.
+                if (_db.has_keyspace(rf_change_plan.ks_name)) {
+                    auto& keyspace = _db.find_keyspace(rf_change_plan.ks_name);
+                    const auto& metadata = keyspace.metadata();
+                    auto repl_opts = metadata->strategy_options();
+                    repl_opts.replication = std::move(repl_opts.previous_replication);
+                    repl_opts.previous_replication = {};
+                    repl_opts.next_replication = {};
+                    auto ks_md = keyspace_metadata::new_keyspace(rf_change_plan.ks_name, metadata->strategy_name(), repl_opts,
+                                                            metadata->initial_tablets(),
+                                                            metadata->durable_writes(), metadata->get_storage_options());
+                    generate_keyspace_schema_update(out, guard, std::move(ks_md));
+                }
+                break;
+            }
+        }
+    }
+
     void generate_repair_update(utils::chunked_vector<canonical_mutation>& out, const group0_guard& guard, const locator::global_tablet_id& gid, db_clock::time_point sched_time) {
         auto& tmap = get_token_metadata_ptr()->tablets().get_tablet_map(gid.table);
         auto last_token = tmap.get_last_token(gid.tablet);
@@ -1273,6 +1468,8 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
                 generate_migration_update(out, guard, mig);
             }
         }
+
+        co_await generate_rf_change_updates(out, guard, plan.rf_change_plan());
 
         auto sched_time = db_clock::now();
         for (const auto& gid : plan.repair_plan().repairs()) {
