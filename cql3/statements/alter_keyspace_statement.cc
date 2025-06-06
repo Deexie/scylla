@@ -62,6 +62,7 @@ static unsigned get_abs_rf_diff(const std::string& curr_rf, const std::string& n
 }
 
 void cql3::statements::alter_keyspace_statement::validate(query_processor& qp, const service::client_state& state) const {
+        _keyspace_multi_rf_change = bool(qp.db().features().keyspace_multi_rf_change);
         auto tmp = _name;
         std::transform(tmp.begin(), tmp.end(), tmp.begin(), ::tolower);
         if (is_system_keyspace(tmp)) {
@@ -104,7 +105,7 @@ void cql3::statements::alter_keyspace_statement::validate(query_processor& qp, c
                         // first we need to report non-existing DCs, then if RFs aren't changed by too much.
                         continue;
                     }
-                    if (total_abs_rfs_diff += get_abs_rf_diff(old_rf, new_rf); total_abs_rfs_diff >= 2) {
+                    if (total_abs_rfs_diff += get_abs_rf_diff(old_rf, new_rf); !_keyspace_multi_rf_change && total_abs_rfs_diff >= 2) {
                         throw exceptions::invalid_request_exception("Only one DC's RF can be changed at a time and not by more than 1");
                     }
                 }
@@ -262,7 +263,7 @@ cql3::statements::alter_keyspace_statement::prepare_schema_mutations(query_proce
             service::topology_request_tracking_mutation_builder rtbuilder{global_request_id, qp.proxy().features().topology_requests_type_column};
             rtbuilder.set("done", false)
                      .set("start_time", db_clock::now())
-                     .set("request_type", service::global_topology_request::keyspace_rf_change);
+                     .set("request_type", _keyspace_multi_rf_change ? service::global_topology_request::keyspace_rf_change_v2 : service::global_topology_request::keyspace_rf_change);
             if (qp.proxy().features().topology_global_request_queue) {
                 rtbuilder.set_new_keyspace_rf_change_data(_name, ks_options);
             }
