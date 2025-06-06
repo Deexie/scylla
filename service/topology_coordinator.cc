@@ -917,6 +917,19 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
             break;
         case global_topology_request::keyspace_rf_change: {
             rtlogger.info("keyspace_rf_change requested");
+            if (_feature_service.keyspace_multi_rf_change) {
+                std::vector<canonical_mutation> updates;
+                updates.push_back(canonical_mutation(topology_mutation_builder(guard.write_timestamp())
+                                                         .set_transition_state(topology::transition_state::tablet_migration)
+                                                         .set_version(_topo_sm._topology.version + 1)
+                                                         .del_global_topology_request()
+                                                         .del_global_topology_request_id()
+                                                         .drop_first_global_topology_request_id(_topo_sm._topology.global_requests_queue, req_id)
+                                                         .schedule_rf_change_request_id(req_id)
+                                                         .build()));
+                co_await update_topology_state(std::move(guard), std::move(updates), "Keyspace RF change request scheduled");
+                break;
+            }
             sstring ks_name;
             std::unordered_map<sstring, sstring> saved_ks_props;
             if (_topo_sm._topology.new_keyspace_rf_change_ks_name) {
