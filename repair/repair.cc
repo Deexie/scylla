@@ -1679,7 +1679,7 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
             std::unordered_map<dht::token_range, repair_neighbors> range_sources;
 
             auto nr_tables = get_nr_tables(db, keyspace_name);
-            rlogger.info("bootstrap_with_repair: started with keyspace={}, nr_ranges={}", keyspace_name, desired_ranges.size() * nr_tables);
+            rlogger.info("bootstrap_with_repair: started with keyspace={}, nr_ranges={}, desired_ranges={}, range_addresses={}", keyspace_name, desired_ranges.size() * nr_tables, desired_ranges.size(), range_addresses.size());
             for (auto& desired_range : desired_ranges) {
                 for (auto& x : range_addresses) {
                     const wrapping_interval<dht::token>& src_range = x.first;
@@ -1692,7 +1692,7 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
                         }
 
                         std::unordered_set<locator::host_id> new_endpoints(it->second.begin(), it->second.end());
-                        rlogger.debug("bootstrap_with_repair: keyspace={}, range={}, old_endpoints={}, new_endpoints={}",
+                        rlogger.info("bootstrap_with_repair: keyspace={}, range={}, old_endpoints={}, new_endpoints={}",
                                 keyspace_name, desired_range, old_endpoints, new_endpoints);
                         // Due to CASSANDRA-5953 we can have a higher RF then we have endpoints.
                         // So we need to be careful to only be strict when endpoints == RF
@@ -1744,7 +1744,7 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
                         auto rf_in_local_dc = get_rf_in_local_dc();
                         if (everywhere_topology) {
                             neighbors = old_endpoints_in_local_dc.empty() ? old_endpoints : old_endpoints_in_local_dc;
-                            rlogger.debug("bootstrap_with_repair: keyspace={}, range={}, old_endpoints={}, new_endpoints={}, old_endpoints_in_local_dc={}, neighbors={}",
+                            rlogger.info("bootstrap_with_repair: keyspace={}, range={}, old_endpoints={}, new_endpoints={}, old_endpoints_in_local_dc={}, neighbors={}",
                                     keyspace_name, desired_range, old_endpoints, new_endpoints, old_endpoints_in_local_dc, neighbors);
                         } else if (old_endpoints.size() == replication_factor) {
                             // For example, with RF = 3 and 3 nodes n1, n2, n3
@@ -1753,9 +1753,11 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
                             // is losing the range. Choose the bootstrapping
                             // node n4 to run repair to sync with the node
                             // losing the range n3
+                            rlogger.info("A");
                             mandatory_neighbors = get_node_losing_the_ranges(old_endpoints, new_endpoints);
                             neighbors = mandatory_neighbors;
                         } else if (old_endpoints.size() < replication_factor) {
+                            rlogger.info("B");
                           if (!find_node_in_local_dc_only) {
                             neighbors = old_endpoints;
                           } else {
@@ -1791,7 +1793,7 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
                             throw std::runtime_error(fmt::format("bootstrap_with_repair: keyspace={}, range={}, wrong number of old_endpoints={}, rf={}",
                                         keyspace_name, desired_range, old_endpoints, replication_factor));
                         }
-                        rlogger.debug("bootstrap_with_repair: keyspace={}, range={}, neighbors={}, mandatory_neighbors={}",
+                        rlogger.info("bootstrap_with_repair: keyspace={}, range={}, neighbors={}, mandatory_neighbors={}",
                                 keyspace_name, desired_range, neighbors, mandatory_neighbors);
                         range_sources[desired_range] = repair_neighbors(std::move(neighbors), std::move(mandatory_neighbors));
                     }
