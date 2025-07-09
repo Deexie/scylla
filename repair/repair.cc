@@ -1655,6 +1655,7 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
         }).get();
         rlogger.info("bootstrap_with_repair: started with keyspaces={}, nr_ranges_total={}", ks_erms | std::views::keys, nr_ranges_total);
         for (const auto& [keyspace_name, erm] : ks_erms) {
+            auto start_time = std::chrono::steady_clock::now();
             if (!db.has_keyspace(keyspace_name)) {
                 rlogger.info("bootstrap_with_repair: keyspace={} does not exist any more, ignoring it", keyspace_name);
                 continue;
@@ -1797,9 +1798,12 @@ future<> repair_service::bootstrap_with_repair(locator::token_metadata_ptr tmptr
                     }
                 }
             }
+            auto duration = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time);
+            rlogger.info("bootstrap_with_repair: repair preparation keyspace={}, nr_ranges={}, duration={}", keyspace_name, desired_ranges.size() * nr_tables, duration);
             auto nr_ranges = desired_ranges.size();
             sync_data_using_repair(keyspace_name, erm, std::move(desired_ranges), std::move(range_sources), reason, nullptr).get();
-            rlogger.info("bootstrap_with_repair: finished with keyspace={}, nr_ranges={}", keyspace_name, nr_ranges * nr_tables);
+            auto duration2 = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time);
+            rlogger.info("bootstrap_with_repair: finished with keyspace={}, nr_ranges={}, duration={}", keyspace_name, nr_ranges * nr_tables, duration2);
         }
         rlogger.info("bootstrap_with_repair: finished with keyspaces={}", ks_erms | std::views::keys);
     });
