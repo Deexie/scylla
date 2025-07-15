@@ -12,6 +12,7 @@
 #include "repair/row_level.hh"
 
 #include "locator/network_topology_strategy.hh"
+#include "seastar/core/on_internal_error.hh"
 #include "streaming/stream_reason.hh"
 #include "gms/inet_address.hh"
 #include "gms/gossiper.hh"
@@ -2267,9 +2268,63 @@ static std::unordered_set<locator::host_id> get_token_owners_in_dcs(std::vector<
     return dc_endpoints;
 }
 
+future<> repair::remote_metas::for_each_local_meta(std::function<future<>(const tablet_repair_task_meta&)> func) const {
+    size_t this_shard = this_shard_id();
+    if (!_metas_on_shards[this_shard]) {
+        co_return;
+    }
+    for (size_t i = 0; i < _metas_on_shards[this_shard]->metas.size(); ++i) {
+        co_await func(_metas_on_shards[this_shard]->metas[i]);
+    }
+}
+
+// func calls on different shards are synchronous.
+future<> repair::remote_metas::for_each_meta_on_all_shards(std::function<future<>(const tablet_repair_task_meta&)> func) const {
+    for (size_t shard = 0; shard < smp::count; ++shard) {
+        co_await smp::submit_to(shard, [func, this]() mutable {
+            return for_each_local_meta(func);
+        });
+    }
+}
+
+size_t repair::remote_metas::size() const {
+    return _metas_count;
+}
+
+void repair::remote_metas::clear() {
+    _metas_on_shards.clear();
+}
+
+future<> repair::remote_metas_builder::allocate_on_shard(size_t shard_id) {
+    _remote_metas._metas_on_shards[shard_id] = co_await smp::submit_to(shard_id, []() -> future<remote_metas::remote_data_ptr> {
+        auto ptr = make_lw_shared<remote_data>();
+        co_return remote_metas::remote_data_ptr(std::move(ptr));
+    });
+}
+
+future<> repair::remote_metas_builder::allocate_all_shards() {
+    return parallel_for_each(smp::all_cpus(), [this](size_t shard) -> future<> {
+        return allocate_on_shard(shard);
+    });
+}
+
+future<> repair::remote_metas_builder::add_on_shard(size_t shard_id, tablet_repair_task_meta meta) {
+    ++_remote_metas._metas_count;
+    co_await smp::submit_to(shard_id, [meta = std::move(meta), &metas_ptr = _remote_metas._metas_on_shards[shard_id]]() {
+        if (!metas_ptr) {
+            on_internal_error(rlogger, format("remote_metas_builder::add_on_shard: metas vector isn't created on shard_id={}", shard_id));
+        }
+        metas_ptr->metas.push_back(meta);
+    });
+}
+
+repair::remote_metas repair::remote_metas_builder::build() && {
+    return std::move(_remote_metas);
+}
+
 // Repair all tablets belong to this node for the given table
 future<> repair_service::repair_tablets(repair_uniq_id rid, sstring keyspace_name, std::vector<sstring> table_names, bool primary_replica_only, dht::token_range_vector ranges_specified, std::vector<sstring> data_centers, std::unordered_set<locator::host_id> hosts, std::unordered_set<locator::host_id> ignore_nodes, std::optional<int> ranges_parallelism) {
-    std::vector<tablet_repair_task_meta> task_metas;
+    repair::remote_metas_builder task_metas_builder;
     for (auto& table_name : table_names) {
         lw_shared_ptr<replica::table> t;
         try {
@@ -2373,6 +2428,7 @@ future<> repair_service::repair_tablets(repair_uniq_id rid, sstring keyspace_nam
             throw std::runtime_error("The current host must be part of the repair");
         }
 
+        task_metas_builder.allocate_all_shards().get();
         size_t nr = 0;
         for (auto& m : metas) {
             nr++;
@@ -2435,12 +2491,11 @@ future<> repair_service::repair_tablets(repair_uniq_id rid, sstring keyspace_nam
             for (auto& r : intersection_ranges) {
                 rlogger.debug("repair[{}] Repair tablet task table={}.{} master_shard_id={} range={} neighbors={} replicas={}",
                         rid.uuid(), keyspace_name, table_name, master_shard_id, r, repair_neighbors(nodes, shards).shard_map, m.replicas);
-                task_metas.push_back(tablet_repair_task_meta{keyspace_name, table_name, tid, master_shard_id, r, repair_neighbors(nodes, shards), m.replicas, erm});
-                co_await coroutine::maybe_yield();
+                co_await task_metas_builder.add_on_shard(master_shard_id, tablet_repair_task_meta{keyspace_name, table_name, tid, master_shard_id, r, repair_neighbors(nodes, shards), m.replicas, erm});
             }
         }
     }
-    auto task = co_await _repair_module->make_and_start_task<repair::tablet_repair_task_impl>({}, rid, keyspace_name, tasks::task_id::create_null_id(), table_names, streaming::stream_reason::repair, std::move(task_metas), ranges_parallelism, service::default_session_id);
+    auto task = co_await _repair_module->make_and_start_task<repair::tablet_repair_task_impl>({}, rid, keyspace_name, tasks::task_id::create_null_id(), table_names, streaming::stream_reason::repair, std::move(task_metas_builder).build(), ranges_parallelism, service::default_session_id);
 }
 
 // It is called by the repair_tablet rpc verb to repair the given tablet
@@ -2499,11 +2554,12 @@ future<gc_clock::time_point> repair_service::repair_tablet(gms::gossip_address_m
         co_return flush_time;
     }
 
-    std::vector<tablet_repair_task_meta> task_metas;
+    repair::remote_metas_builder task_metas_builder;
+    co_await task_metas_builder.allocate_on_shard(*master_shard_id);
     auto ranges_parallelism = std::nullopt;
     auto start = std::chrono::steady_clock::now();
-    task_metas.push_back(tablet_repair_task_meta{keyspace_name, table_name, table_id, *master_shard_id, range, repair_neighbors(nodes, shards), replicas});
-    auto task_impl_ptr = seastar::make_shared<repair::tablet_repair_task_impl>(_repair_module, id, keyspace_name, global_tablet_repair_task_info.id, table_names, streaming::stream_reason::repair, std::move(task_metas), ranges_parallelism, topo_guard, rebuild_replicas.has_value());
+    co_await task_metas_builder.add_on_shard(*master_shard_id, tablet_repair_task_meta{keyspace_name, table_name, table_id, *master_shard_id, range, repair_neighbors(nodes, shards), replicas});
+    auto task_impl_ptr = seastar::make_shared<repair::tablet_repair_task_impl>(_repair_module, id, keyspace_name, global_tablet_repair_task_info.id, table_names, streaming::stream_reason::repair, std::move(task_metas_builder).build(), ranges_parallelism, topo_guard, rebuild_replicas.has_value());
     task_impl_ptr->sched_by_scheduler = true;
     auto task = co_await _repair_module->make_task(task_impl_ptr, global_tablet_repair_task_info);
     task->start();
@@ -2525,14 +2581,13 @@ tasks::is_user_task repair::tablet_repair_task_impl::is_user_task() const noexce
 }
 
 future<> repair::tablet_repair_task_impl::release_resources() noexcept {
-    _metas_size = _metas.size();
-    _metas = {};
+    _metas.clear();
     _tables = {};
     return make_ready_future();
 }
 
 size_t repair::tablet_repair_task_impl::get_metas_size() const noexcept {
-    return _metas.size() > 0 ? _metas.size() : _metas_size;
+    return _metas.size();
 }
 
 future<> repair::tablet_repair_task_impl::run() {
@@ -2550,11 +2605,11 @@ future<> repair::tablet_repair_task_impl::run() {
         // Start the off strategy updater
         std::unordered_set<locator::host_id> participants;
         std::unordered_set<table_id> table_ids;
-        for (auto& meta : _metas) {
-            thread::maybe_yield();
+        _metas.for_each_meta_on_all_shards([&participants, &table_ids] (const tablet_repair_task_meta& meta) -> future<> {
             participants.insert(meta.neighbors.all.begin(), meta.neighbors.all.end());
             table_ids.insert(meta.tid);
-        }
+            return make_ready_future<>();
+        }).get();
         abort_source as;
         auto off_strategy_updater = seastar::async([&rs, uuid = id.uuid().uuid(), &table_ids, &participants, &as] {
             auto tables = std::list<table_id>(table_ids.begin(), table_ids.end());
@@ -2595,19 +2650,17 @@ future<> repair::tablet_repair_task_impl::run() {
 
         auto parent_shard = this_shard_id();
         std::vector<gc_clock::time_point> flush_times(smp::count);
-        rs.container().invoke_on_all([&idx, &flush_times, id, metas = _metas, parent_data, reason = _reason, tables = _tables, sched_by_scheduler = sched_by_scheduler, ranges_parallelism = _ranges_parallelism, parent_shard, topo_guard = _topo_guard, skip_flush = _skip_flush] (repair_service& rs) -> future<> {
+        rs.container().invoke_on_all([&idx, &flush_times, id, &metas = _metas, &parent_data, reason = _reason, &tables = _tables, sched_by_scheduler = sched_by_scheduler, ranges_parallelism = _ranges_parallelism, parent_shard, topo_guard = _topo_guard, skip_flush = _skip_flush] (repair_service& rs) -> future<> {
             std::exception_ptr error;
-            for (auto& m : metas) {
-                if (m.master_shard_id != this_shard_id()) {
-                    continue;
-                }
+            co_await metas.for_each_local_meta(coroutine::lambda([&rs, metas_size = metas.size(), &idx, id, &flush_times, parent_data, reason, &tables, sched_by_scheduler = sched_by_scheduler, ranges_parallelism, parent_shard, topo_guard, skip_flush, &error] (const tablet_repair_task_meta& m) -> future<> {
+                co_await coroutine::maybe_yield();
                 auto nr = idx.fetch_add(1);
                 rlogger.info("repair[{}] Repair {} out of {} tablets: table={}.{} range={} replicas={}",
-                    id.uuid(), nr, metas.size(), m.keyspace_name, m.table_name, m.range, m.replicas);
+                    id.uuid(), nr, metas_size, m.keyspace_name, m.table_name, m.range, m.replicas);
                 lw_shared_ptr<replica::table> t = rs._db.local().get_tables_metadata().get_table_if_exists(m.tid);
                 if (!t) {
                     rlogger.debug("repair[{}] Table {}.{} does not exist anymore", id.uuid(), m.keyspace_name, m.table_name);
-                    continue;
+                    co_return;
                 }
                 if (co_await rs.get_repair_module().is_aborted(id.uuid(), parent_shard)) {
                     throw abort_requested_exception();
@@ -2655,7 +2708,7 @@ future<> repair::tablet_repair_task_impl::run() {
                 auto current = flush_times[this_shard_id()];
                 auto time = task_impl_ptr->get_flush_time();
                 flush_times[this_shard_id()] = current == gc_clock::time_point() ? time : std::min(current, time);
-            }
+            }));
             if (error) {
                 co_await coroutine::return_exception_ptr(std::move(error));
             }

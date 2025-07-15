@@ -16,6 +16,8 @@
 
 namespace repair {
 
+class remote_metas;
+
 class repair_task_impl : public tasks::task_manager::task::impl {
 protected:
     streaming::stream_reason _reason;
@@ -105,22 +107,54 @@ protected:
     virtual future<std::optional<double>> expected_total_workload() const override;
     virtual std::optional<double> expected_children_number() const override;
 };
+struct remote_data {
+    utils::chunked_vector<tablet_repair_task_meta> metas;
+};
+
+class remote_metas {
+public:
+    using remote_data_ptr = foreign_ptr<lw_shared_ptr<remote_data>>;
+private:
+    std::vector<remote_data_ptr> _metas_on_shards;
+    size_t _metas_count = 0;
+
+    remote_metas() : _metas_on_shards(smp::count) {}
+public:
+    future<> for_each_local_meta(std::function<future<>(const tablet_repair_task_meta&)> func) const;
+    // func calls on different shards are synchronous.
+    future<> for_each_meta_on_all_shards(std::function<future<>(const tablet_repair_task_meta&)> func) const;
+    size_t size() const;
+    void clear();
+
+    friend class remote_metas_builder;
+};
+
+class remote_metas_builder {
+private:
+    remote_metas _remote_metas;
+public:
+    remote_metas_builder() : _remote_metas() {}
+
+    future<> allocate_on_shard(size_t shard_id);
+    future<> allocate_all_shards();
+    future<> add_on_shard(size_t shard_id, tablet_repair_task_meta meta);
+    remote_metas build() &&;
+};
 
 class tablet_repair_task_impl : public repair_task_impl {
 private:
     sstring _keyspace;
     std::vector<sstring> _tables;
-    std::vector<tablet_repair_task_meta> _metas;
+    remote_metas _metas;
     optimized_optional<abort_source::subscription> _abort_subscription;
     std::optional<int> _ranges_parallelism;
-    size_t _metas_size = 0;
     gc_clock::time_point _flush_time;
     service::frozen_topology_guard _topo_guard;
     bool _skip_flush;
 public:
     bool sched_by_scheduler = false;
 public:
-    tablet_repair_task_impl(tasks::task_manager::module_ptr module, repair_uniq_id id, sstring keyspace, tasks::task_id parent_id, std::vector<sstring> tables, streaming::stream_reason reason, std::vector<tablet_repair_task_meta> metas, std::optional<int> ranges_parallelism, service::frozen_topology_guard topo_guard, bool skip_flush = false)
+    tablet_repair_task_impl(tasks::task_manager::module_ptr module, repair_uniq_id id, sstring keyspace, tasks::task_id parent_id, std::vector<sstring> tables, streaming::stream_reason reason, remote_metas metas, std::optional<int> ranges_parallelism, service::frozen_topology_guard topo_guard, bool skip_flush = false)
         : repair_task_impl(module, id.uuid(), id.id, "keyspace", keyspace, "", "", parent_id, reason)
         , _keyspace(std::move(keyspace))
         , _tables(std::move(tables))
