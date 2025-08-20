@@ -10,6 +10,8 @@
 #include "locator/tablet_replication_strategy.hh"
 #include "utils/class_registrator.hh"
 #include "exceptions/exceptions.hh"
+#include <algorithm>
+#include <exception>
 #include <fmt/ranges.h>
 #include <seastar/core/coroutine.hh>
 #include <seastar/coroutine/maybe_yield.hh>
@@ -19,6 +21,9 @@
 
 #include <boost/icl/interval.hpp>
 #include <boost/icl/interval_map.hpp>
+#include <stdexcept>
+#include <sys/types.h>
+#include <variant>
 
 namespace locator {
 
@@ -155,22 +160,34 @@ const tablet_aware_replication_strategy* abstract_replication_strategy::maybe_as
     return dynamic_cast<const tablet_aware_replication_strategy*>(this);
 }
 
-void replication_factor_data::parse(const sstring& rf) {
+size_t replication_factor_data::parse(const sstring& rf) {
     if (rf.empty() || std::any_of(rf.begin(), rf.end(), [] (char c) {return !isdigit(c);})) {
         throw exceptions::configuration_exception(
                 format("Replication factor must be numeric and non-negative, found '{}'", rf));
     }
     try {
-        _count = std::stol(rf);
+        return std::stol(rf);
     } catch (...) {
         throw exceptions::configuration_exception(
             sstring("Replication factor must be numeric; found ") + rf);
     }
 }
 
-replication_factor_data abstract_replication_strategy::parse_replication_factor(sstring rf)
+replication_factor_data abstract_replication_strategy::parse_replication_factor(const replication_strategy_config_option& rf)
 {
-    return replication_factor_data(rf);
+    // FIXME: Store rack list. This is temporary.
+    return replication_factor_data(to_sstring(locator::get_replication_factor(rf)));
+}
+
+size_t get_replication_factor(const replication_strategy_config_option& opt) {
+    return std::visit(overloaded_functor{
+        [&] (const sstring& s) -> size_t {
+            return replication_factor_data::parse(s);
+        },
+        [&] (const std::vector<sstring>& v) -> size_t {
+            return v.size();
+        }
+    }, opt);
 }
 
 static
