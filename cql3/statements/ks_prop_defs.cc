@@ -45,6 +45,17 @@ static locator::replication_strategy_config_options prepare_options(
         return options;
     }
 
+    if (uses_tablets) {
+        for (const auto& opt: old_options) {
+            if (opt.first == ks_prop_defs::REPLICATION_FACTOR_KEY) {
+                on_internal_error(logger, "prepare_options: for tablet keyspaces replication_factor parameter is extended to per-DC options");
+            }
+            if (!options.contains(opt.first)) {
+                throw exceptions::configuration_exception(fmt::format("Attempted to implicitly drop replicas in datacenter {}. If this is the desired behavior, set replication factor to 0 in {} explicitly.", opt.first, opt.first));
+            }
+        }
+    }
+
     // For users' convenience, expand the 'replication_factor' option into a replication factor for each DC.
     // If the user simply switches from another strategy without providing any options,
     // but the other strategy used the 'replication_factor' option, it will also be expanded.
