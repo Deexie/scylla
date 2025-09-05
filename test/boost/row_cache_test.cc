@@ -1023,6 +1023,100 @@ SEASTAR_TEST_CASE(test_single_partition_update) {
     });
 }
 
+SEASTAR_TEST_CASE(test_cache_invalidate_filter) {
+    return seastar::async([] {
+        auto s = make_schema();
+        tests::reader_concurrency_semaphore_wrapper semaphore;
+        auto cache_mt = make_lw_shared<replica::memtable>(s);
+
+        cache_tracker tracker;
+        row_cache cache(s, snapshot_source_from_snapshot(cache_mt->as_data_source()), tracker, is_continuous::yes);
+
+        testlog.info("Check cache miss with populate");
+
+        int partition_count = 1000;
+
+        // // populate cache with some partitions
+        // std::vector<dht::decorated_key> keys_in_cache;
+        // for (int i = 0; i < partition_count; i++) {
+        //     auto m = make_new_mutation(s);
+        //     keys_in_cache.push_back(m.decorated_key());
+        //     cache.populate(m);
+        // }
+
+        // for (auto&& key : keys_in_cache) {
+        //     verify_has(cache, key);
+        // }
+
+        // testlog.info("Check cache miss with drop");
+
+        // auto mt = make_lw_shared<replica::memtable>(s);
+
+
+        // populate memtable with partitions not in cache
+        auto mt = make_lw_shared<replica::memtable>(s);
+        std::vector<dht::decorated_key> keys_in_cache;
+        for (int i = 0; i < partition_count; i++) {
+            auto m = make_new_mutation(s);
+            keys_in_cache.push_back(m.decorated_key());
+            mt->apply(m);
+            cache.invalidate(row_cache::external_updater([] {}), dht::partition_range::make_singular(m.decorated_key()), [] (const auto&) { return false; }).get();
+        }
+
+        cache.update(row_cache::external_updater([] {}), *mt).get();
+        // for (int i = 0; i < partition_count; i++) {
+        //     auto m = make_new_mutation(s);
+        //     keys_in_cache.push_back(m.decorated_key());
+        //     mt->apply(m);
+        //     // cache.invalidate(row_cache::external_updater([] {}), dht::partition_range::make_singular(m.decorated_key()), [] (const auto&) { return false; }).get();
+        // }
+
+        // cache.update(row_cache::external_updater([] {}), *mt).get();
+
+        for (auto&& key : keys_in_cache) {
+            verify_does_not_have(cache, key);
+        }
+
+        auto mt2 = make_lw_shared<replica::memtable>(s);
+
+        // populate memtable with partitions not in cache
+        std::vector<dht::decorated_key> keys_not_in_cache;
+        for (int i = 0; i < partition_count; i++) {
+            auto m = make_new_mutation(s);
+            keys_not_in_cache.push_back(m.decorated_key());
+            mt2->apply(m);
+            // cache.invalidate(row_cache::external_updater([] {}), dht::partition_range::make_singular(m.decorated_key()), [] (const auto&) { return true; }).get();
+        }
+
+        cache.update(row_cache::external_updater([] {}), *mt2).get();
+
+        // // for (auto&& key : keys_in_cache) {
+        // //     verify_has(cache, key);
+        // // }
+
+        // for (auto&& key : keys_not_in_cache) {
+        //     verify_does_not_have(cache, key);
+        // }
+
+        // testlog.info("Check cache hit with merge");
+
+        // auto mt3 = make_lw_shared<replica::memtable>(s);
+
+        // utils::chunked_vector<mutation> new_mutations;
+        // for (auto&& key : keys_in_cache) {
+        //     auto m = make_new_mutation(s, key.key());
+        //     new_mutations.push_back(m);
+        //     mt3->apply(m);
+        // }
+
+        // cache.update(row_cache::external_updater([] {}), *mt3).get();
+
+        // for (auto&& m : new_mutations) {
+        //     verify_has(cache, m);
+        // }
+    });
+}
+
 SEASTAR_TEST_CASE(test_update) {
     return seastar::async([] {
         auto s = make_schema();

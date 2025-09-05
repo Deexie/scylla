@@ -454,8 +454,8 @@ public:
     // completes will see all writes from the underlying
     // mutation source made prior to the call to invalidate().
     future<> invalidate(external_updater, const dht::decorated_key&);
-    future<> invalidate(external_updater, const dht::partition_range& = query::full_partition_range);
-    future<> invalidate(external_updater, dht::partition_range_vector&&);
+    future<> invalidate(external_updater, const dht::partition_range& = query::full_partition_range, std::function<bool(const dht::decorated_key&)> filter = [] (const auto& _) { return true; });
+    future<> invalidate(external_updater, dht::partition_range_vector&&, std::function<bool(const dht::decorated_key&)> filter = [] (const auto& _) { return true; });
 
     // Evicts entries from cache.
     //

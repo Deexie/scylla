@@ -26,6 +26,7 @@
 #include "cache_mutation_reader.hh"
 #include "partition_snapshot_reader.hh"
 #include "keys/clustering_key_filter.hh"
+#include "seastar/core/loop.hh"
 #include "utils/assert.hh"
 #include "utils/updateable_value.hh"
 #include "utils/labels.hh"
@@ -1214,13 +1215,13 @@ future<> row_cache::invalidate(external_updater eu, const dht::decorated_key& dk
     return invalidate(std::move(eu), dht::partition_range::make_singular(dk));
 }
 
-future<> row_cache::invalidate(external_updater eu, const dht::partition_range& range) {
+future<> row_cache::invalidate(external_updater eu, const dht::partition_range& range, std::function<bool(const dht::decorated_key&)> filter) {
     return invalidate(std::move(eu), dht::partition_range_vector({range}));
 }
 
-future<> row_cache::invalidate(external_updater eu, dht::partition_range_vector&& ranges) {
-    return do_update(std::move(eu), [this, ranges = std::move(ranges)] {
-        return seastar::async([this, ranges = std::move(ranges)] {
+future<> row_cache::invalidate(external_updater eu, dht::partition_range_vector&& ranges, std::function<bool(const dht::decorated_key&)> filter) {
+    return do_update(std::move(eu), [this, ranges = std::move(ranges), filter = std::move(filter)] {
+        return seastar::async([this, ranges = std::move(ranges), filter = std::move(filter)] {
             auto on_failure = defer([this] () noexcept {
                 this->clear_now();
                 _prev_snapshot_pos = {};
@@ -1232,17 +1233,33 @@ future<> row_cache::invalidate(external_updater eu, dht::partition_range_vector&
                 seastar::thread::maybe_yield();
 
                 while (true) {
-                    auto done = _update_section(_tracker.region(), [&] {
+                    auto done = _update_section(_tracker.region(), [&] -> future<stop_iteration> {
                         auto cmp = dht::ring_position_comparator(*_schema);
                         auto it = _partitions.lower_bound(*_prev_snapshot_pos, cmp);
                         auto end = _partitions.lower_bound(dht::ring_position_view::for_range_end(range), cmp);
-                        return with_allocator(_tracker.allocator(), [&] {
+                        co_return with_allocator(_tracker.allocator(), [&] {
+                            // bool done_anything = it != end;
                             while (it != end) {
+                              if (filter(it->key())) {
+                                SCYLLA_ASSERT(false);
+                                const auto key = it->key();
                                 it = it.erase_and_dispose(dht::raw_token_less_comparator{},
                                     [&] (cache_entry* p) mutable noexcept {
                                         _tracker.on_partition_erase();
                                         p->evict(_tracker);
                                     });
+
+                                if (it == end || !filter(it->key())) {
+                                    SCYLLA_ASSERT(it != _partitions.end());
+                                    _tracker.clear_continuity(*it);
+                                }
+                              } else {
+                                ++it;
+                                if (true) {
+                                    SCYLLA_ASSERT(it != _partitions.end());
+                                    _tracker.clear_continuity(*it);
+                                }
+                              }
                                 // it != end is necessary for correctness. We cannot set _prev_snapshot_pos to end->position()
                                 // because after resuming something may be inserted before "end" which falls into the next range.
                                 if (need_preempt() && it != end) {
@@ -1252,11 +1269,15 @@ future<> row_cache::invalidate(external_updater eu, dht::partition_range_vector&
                                     break;
                                 }
                             }
-                            SCYLLA_ASSERT(it != _partitions.end());
-                            _tracker.clear_continuity(*it);
+                            // if (!done_anything || invalidated) {
+                            //     SCYLLA_ASSERT(it != _partitions.end());
+                            //     _tracker.clear_continuity(*it);
+                            // }
+                            // SCYLLA_ASSERT(it != _partitions.end());
+                            // _tracker.clear_continuity(*it);
                             return stop_iteration(it == end);
                         });
-                    });
+                    }).get();
                     if (done == stop_iteration::yes) {
                         break;
                     }
