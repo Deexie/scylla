@@ -219,6 +219,9 @@ schema_ptr keyspaces() {
             {"durable_writes", boolean_type},
             {"replication", map_type_impl::get_instance(utf8_type, utf8_type, false)},
             {"replication_v2", map_type_impl::get_instance(utf8_type, utf8_type, false)}, // with rack list RF
+            {"previous_replication", map_type_impl::get_instance(utf8_type, utf8_type, false)}, // rack list RF before ongoing RF change
+            {"next_replication", map_type_impl::get_instance(utf8_type, utf8_type, false)}, // target rack list RF for this RF change
+
         },
         // static columns
         {},
@@ -1227,6 +1230,8 @@ utils::chunked_vector<mutation> make_create_keyspace_mutations(schema_features f
 
     auto map_v1 = keyspace->strategy_options_v1();
     auto map = keyspace->strategy_options();
+    const auto& previous_map_opt = keyspace->previous_strategy_options_opt();
+    const auto& next_map_opt = keyspace->next_strategy_options_opt();
     map_v1["class"] = keyspace->strategy_name();
     map["class"] = keyspace->strategy_name();
     store_map(m, ckey, "replication", timestamp, cql3::statements::to_flattened_map(map_v1));
@@ -1234,6 +1239,16 @@ utils::chunked_vector<mutation> make_create_keyspace_mutations(schema_features f
         // Avoid setting in this case for the sake of rolling upgrade, which must be able to revert to the old schema.
         // If the maps are different, the upgrade must be already done.
         store_map(m, ckey, "replication_v2", timestamp, cql3::statements::to_flattened_map(map));
+    }
+    if (previous_map_opt) {
+        auto previous_map = *previous_map_opt;
+        previous_map["class"] = keyspace->strategy_name();
+        store_map(m, ckey, "previous_replication", timestamp, cql3::statements::to_flattened_map(previous_map));
+    }
+    if (next_map_opt) {
+        auto next_map = *next_map_opt;
+        next_map["class"] = keyspace->strategy_name();
+        store_map(m, ckey, "next_replication", timestamp, cql3::statements::to_flattened_map(next_map));
     }
 
     if (features.contains<schema_feature::SCYLLA_KEYSPACES>()) {
@@ -1308,6 +1323,8 @@ future<lw_shared_ptr<keyspace_metadata>> create_keyspace_metadata(
     // (or screw up shared pointers)
     const auto& replication = row.get_nonnull<map_type_impl::native_type>("replication");
     const auto& replication_v2 = row.get<map_type_impl::native_type>("replication_v2");
+    const auto& previous_replication = row.get<map_type_impl::native_type>("previous_replication");
+    const auto& next_replication = row.get<map_type_impl::native_type>("next_replication");
 
     cql3::statements::property_definitions::map_type flat_strategy_options;
     for (auto& p : replication_v2 ? *replication_v2 : replication) {
@@ -1316,6 +1333,27 @@ future<lw_shared_ptr<keyspace_metadata>> create_keyspace_metadata(
     auto strategy_options = cql3::statements::from_flattened_map(flat_strategy_options);
     auto strategy_name = std::get<sstring>(strategy_options["class"]);
     strategy_options.erase("class");
+
+    std::optional<cql3::statements::property_definitions::extended_map_type> previous_strategy_options = std::nullopt;
+    if (previous_replication) {
+        cql3::statements::property_definitions::map_type flat_previous_replication;
+        for (auto& p : *previous_replication) {
+            flat_previous_replication.emplace(value_cast<sstring>(p.first), value_cast<sstring>(p.second));
+        }
+        previous_strategy_options = cql3::statements::from_flattened_map(flat_previous_replication);
+        previous_strategy_options->erase("class");
+    }
+
+    std::optional<cql3::statements::property_definitions::extended_map_type> next_strategy_options = std::nullopt;
+    if (next_replication) {
+        cql3::statements::property_definitions::map_type flat_next_replication;
+        for (auto& p : *next_replication) {
+            flat_next_replication.emplace(value_cast<sstring>(p.first), value_cast<sstring>(p.second));
+        }
+        next_strategy_options = cql3::statements::from_flattened_map(flat_next_replication);
+        next_strategy_options->erase("class");
+    }
+
     bool durable_writes = row.get_nonnull<bool>("durable_writes");
 
     data_dictionary::storage_options storage_opts;
@@ -1341,7 +1379,7 @@ future<lw_shared_ptr<keyspace_metadata>> create_keyspace_metadata(
             }
         }
     }
-    co_return keyspace_metadata::new_keyspace(keyspace_name, strategy_name, strategy_options, initial_tablets, consistency, durable_writes, storage_opts);
+    co_return keyspace_metadata::new_keyspace(keyspace_name, strategy_name, strategy_options, initial_tablets, consistency, durable_writes, storage_opts, {}, previous_strategy_options, next_strategy_options);
 }
 
 template<typename V>
