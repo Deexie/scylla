@@ -3464,7 +3464,7 @@ future<service::topology> system_keyspace::load_topology_state(const std::unorde
 
         if (some_row.has("ongoing_rf_change")) {
             for (auto&& v : deserialize_set_column(*topology(), some_row, "ongoing_rf_change")) {
-                ret.ongoing_rf_change.insert(value_cast<utils::UUID>(v));
+                ret.ongoing_rf_changes.insert(value_cast<utils::UUID>(v));
             }
         }
 

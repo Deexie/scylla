@@ -168,6 +168,61 @@ struct tablet_rack_list_colocation_plan {
     }
 };
 
+enum class replica_type {
+    pending,
+    leaving
+};
+
+struct tablet_rebuild_info {
+    locator::global_tablet_id tablet;
+    locator::tablet_replica replica;
+    replica_type type;
+};
+
+struct replication_update_info {
+    utils::UUID request_id;
+    sstring ks_name;
+    std::unordered_map<sstring, std::vector<sstring>> new_replication;
+};
+
+struct abort_rf_change_info {
+    utils::UUID request_id;
+    sstring ks_name;
+    sstring error;
+};
+
+struct finished_rf_change_info {
+    utils::UUID request_id;
+    sstring ks_name;
+    sstring error;
+};
+
+struct keyspace_rf_change_plan {
+    std::vector<tablet_rebuild_info> rebuilds;
+    std::vector<replication_update_info> replication_updates;
+    std::vector<abort_rf_change_info> aborts;
+    std::vector<finished_rf_change_info> finishes;
+
+    // const utils::UUID& request_to_resume() const noexcept {
+    //     return _request_to_resume;
+    // }
+
+    size_t size() const { return rebuilds.size() + replication_updates.size() + aborts.size() + finishes.size(); };
+
+    void merge(keyspace_rf_change_plan&& other) {
+        std::move(other.rebuilds.begin(), other.rebuilds.end(), std::back_inserter(rebuilds));
+        std::move(other.replication_updates.begin(), other.replication_updates.end(), std::back_inserter(replication_updates));
+        std::move(other.aborts.begin(), other.aborts.end(), std::back_inserter(aborts));
+        std::move(other.finishes.begin(), other.finishes.end(), std::back_inserter(finishes));
+    }
+
+    // void maybe_add_request_to_resume(const utils::UUID& id) {
+    //     if (!_request_to_resume) {
+    //         _request_to_resume = id;
+    //     }
+    // }
+};
+
 class migration_plan {
 public:
     using migrations_vector = utils::chunked_vector<tablet_migration_info>;
@@ -176,18 +231,20 @@ private:
     table_resize_plan _resize_plan;
     tablet_repair_plan _repair_plan;
     tablet_rack_list_colocation_plan _rack_list_colocation_plan;
+    keyspace_rf_change_plan _rf_change_plan;
     bool _has_nodes_to_drain = false;
 public:
     /// Returns true iff there are decommissioning nodes which own some tablet replicas.
     bool has_nodes_to_drain() const { return _has_nodes_to_drain; }
 
     const migrations_vector& migrations() const { return _migrations; }
-    bool empty() const { return _migrations.empty() && !_resize_plan.size() && !_repair_plan.size() && !_rack_list_colocation_plan.size(); }
-    size_t size() const { return _migrations.size() + _resize_plan.size() + _repair_plan.size() + _rack_list_colocation_plan.size(); }
+    bool empty() const { return _migrations.empty() && !_resize_plan.size() && !_repair_plan.size() && !_rack_list_colocation_plan.size() && !_rf_change_plan.size(); }
+    size_t size() const { return _migrations.size() + _resize_plan.size() + _repair_plan.size() + _rack_list_colocation_plan.size() + _rf_change_plan.size(); }
     size_t tablet_migration_count() const { return _migrations.size(); }
     size_t resize_decision_count() const { return _resize_plan.size(); }
     size_t tablet_repair_count() const { return _repair_plan.size(); }
     size_t tablet_rack_list_colocation_count() const { return _rack_list_colocation_plan.size(); }
+    size_t keyspace_rf_change_count() const { return _rf_change_plan.size(); }
 
     void add(tablet_migration_info info) {
         _migrations.emplace_back(std::move(info));
@@ -205,6 +262,7 @@ public:
         _resize_plan.merge(std::move(other._resize_plan));
         _repair_plan.merge(std::move(other._repair_plan));
         _rack_list_colocation_plan.merge(std::move(other._rack_list_colocation_plan));
+        _rf_change_plan.merge(std::move(other._rf_change_plan));
     }
 
     void set_has_nodes_to_drain(bool b) {
@@ -227,6 +285,12 @@ public:
 
     void set_rack_list_colocation_plan(tablet_rack_list_colocation_plan rack_list_colocation_plan) {
         _rack_list_colocation_plan = std::move(rack_list_colocation_plan);
+    }
+
+    const keyspace_rf_change_plan& rf_change_plan() const { return _rf_change_plan; }
+
+    void set_rf_change_plan(keyspace_rf_change_plan rf_change_plan) {
+        _rf_change_plan = std::move(rf_change_plan);
     }
 
     future<std::unordered_set<locator::global_tablet_id>> get_migration_tablet_ids() const;
