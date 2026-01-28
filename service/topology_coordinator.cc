@@ -956,6 +956,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber
     enum class keyspace_rf_change_kind {
         default_rf_change,
         conversion_to_rack_list,
+        multi_rf_change
     };
 
     future<keyspace_rf_change_kind> choose_keyspace_rf_change_kind(utils::UUID req_id,
@@ -983,6 +984,9 @@ class topology_coordinator : public endpoint_lifecycle_subscriber
         }
         if (co_await check_needs_colocation()) {
             co_return keyspace_rf_change_kind::conversion_to_rack_list;
+        }
+        if (_feature_service.keyspace_multi_rf_change && _db.get_config().enforce_rack_list() && !rf_equals(old_replication_strategy_config, new_replication_strategy_config)) {
+            co_return keyspace_rf_change_kind::multi_rf_change;
         }
         co_return keyspace_rf_change_kind::default_rf_change;
     }
@@ -1125,6 +1129,13 @@ class topology_coordinator : public endpoint_lifecycle_subscriber
                             rtlogger.info("keyspace_rf_change for keyspace {} postponed for colocation", ks_name);
                             topology_mutation_builder tbuilder = tbuilder_with_request_drop();
                             tbuilder.pause_rf_change_request(req_id);
+                            updates.push_back(canonical_mutation(tbuilder.build()));
+                            break;
+                          }
+                          case keyspace_rf_change_kind::multi_rf_change: {
+                            rtlogger.info("keyspace_rf_change for keyspace {} will use multi-rf change procedure", ks_name);
+                            topology_mutation_builder tbuilder = tbuilder_with_request_drop();
+                            tbuilder.start_rf_change_migrations(req_id);
                             updates.push_back(canonical_mutation(tbuilder.build()));
                             break;
                           }
