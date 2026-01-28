@@ -84,6 +84,9 @@ public:
     const locator::replication_strategy_config_options& strategy_options() const {
         return _strategy_options;
     }
+    void set_strategy_options(const locator::replication_strategy_config_options& options) {
+        _strategy_options = options;
+    }
     const std::optional<locator::replication_strategy_config_options>& next_strategy_options_opt() const {
         return _next_strategy_options;
     }

@@ -5191,12 +5191,12 @@ future<> storage_service::abort_rf_change(utils::UUID request_id) {
                 co_return;
             }
             auto& ks = _db.local().find_keyspace(ks_name);
-            if (substract_strategy_config_options(ks.metadata()->previous_strategy_options_opt().value(), ks.metadata()->strategy_options()).empty()) {
+            if (!substract_strategy_config_options(ks.metadata()->next_strategy_options_opt().value(), ks.metadata()->strategy_options()).empty()) {
                 updates.push_back(canonical_mutation(topology_request_tracking_mutation_builder(request_id)
                                     .abort("Aborted by user request")
                                     .build()));
             } else {
-                slogger.warn("RF change request with id '{}' is ongoing, but it already removed some replicas, so it can't be aborted", request_id);
+                slogger.warn("RF change request with id '{}' is ongoing, but it started removing replicas, so it can't be aborted", request_id);
                 co_return;
             }
         } else {

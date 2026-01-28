@@ -1230,8 +1230,6 @@ utils::chunked_vector<mutation> make_create_keyspace_mutations(schema_features f
 
     auto map_v1 = keyspace->strategy_options_v1();
     auto map = keyspace->strategy_options();
-    const auto& previous_map_opt = keyspace->previous_strategy_options_opt();
-    const auto& next_map_opt = keyspace->next_strategy_options_opt();
     map_v1["class"] = keyspace->strategy_name();
     map["class"] = keyspace->strategy_name();
     store_map(m, ckey, "replication", timestamp, cql3::statements::to_flattened_map(map_v1));
@@ -1240,15 +1238,27 @@ utils::chunked_vector<mutation> make_create_keyspace_mutations(schema_features f
         // If the maps are different, the upgrade must be already done.
         store_map(m, ckey, "replication_v2", timestamp, cql3::statements::to_flattened_map(map));
     }
-    if (previous_map_opt) {
-        auto previous_map = *previous_map_opt;
-        previous_map["class"] = keyspace->strategy_name();
-        store_map(m, ckey, "previous_replication", timestamp, cql3::statements::to_flattened_map(previous_map));
-    }
-    if (next_map_opt) {
-        auto next_map = *next_map_opt;
-        next_map["class"] = keyspace->strategy_name();
-        store_map(m, ckey, "next_replication", timestamp, cql3::statements::to_flattened_map(next_map));
+    if (features.contains<schema_feature::KEYSPACE_MULTI_RF_CHANGE>()) {
+        const auto& previous_map_opt = keyspace->previous_strategy_options_opt();
+        const auto& next_map_opt = keyspace->next_strategy_options_opt();
+        if (previous_map_opt) {
+            auto previous_map = *previous_map_opt;
+            previous_map["class"] = keyspace->strategy_name();
+            store_map(m, ckey, "previous_replication", timestamp, cql3::statements::to_flattened_map(previous_map));
+        } else {
+            auto s = m.schema();
+            auto column = s->get_column_definition("previous_replication");
+            m.set_cell(ckey, *column, atomic_cell::make_dead(timestamp, gc_clock::now()));
+        }
+        if (next_map_opt) {
+            auto next_map = *next_map_opt;
+            next_map["class"] = keyspace->strategy_name();
+            store_map(m, ckey, "next_replication", timestamp, cql3::statements::to_flattened_map(next_map));
+        } else {
+            auto s = m.schema();
+            auto column = s->get_column_definition("next_replication");
+            m.set_cell(ckey, *column, atomic_cell::make_dead(timestamp, gc_clock::now()));
+        }
     }
 
     if (features.contains<schema_feature::SCYLLA_KEYSPACES>()) {

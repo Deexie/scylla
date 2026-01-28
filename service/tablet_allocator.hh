@@ -11,6 +11,7 @@
 #include "replica/database_fwd.hh"
 #include "locator/tablets.hh"
 #include "tablet_allocator_fwd.hh"
+#include "locator/abstract_replication_strategy.hh"
 #include "locator/token_metadata_fwd.hh"
 #include <seastar/core/metrics.hh>
 

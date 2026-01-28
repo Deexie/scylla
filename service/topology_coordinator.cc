@@ -1134,6 +1134,14 @@ class topology_coordinator : public endpoint_lifecycle_subscriber
                           }
                           case keyspace_rf_change_kind::multi_rf_change: {
                             rtlogger.info("keyspace_rf_change for keyspace {} will use multi-rf change procedure", ks_name);
+                            ks_md->set_previous_strategy_options(ks.metadata()->strategy_options());
+                            ks_md->set_next_strategy_options(ks_md->strategy_options());
+                            ks_md->set_strategy_options(ks.metadata()->strategy_options()); // start from the old strategy
+                            auto schema_muts = prepare_keyspace_update_announcement(_db, ks_md, guard.write_timestamp());
+                            for (auto& m: schema_muts) {
+                                updates.emplace_back(m);
+                            }
+
                             topology_mutation_builder tbuilder = tbuilder_with_request_drop();
                             tbuilder.start_rf_change_migrations(req_id);
                             updates.push_back(canonical_mutation(tbuilder.build()));
@@ -1505,7 +1513,6 @@ class topology_coordinator : public endpoint_lifecycle_subscriber
             auto ks_md = new_ks_props.as_ks_metadata_update(ks.metadata(), *tmptr, _db.features(), _db.get_config());
             ks_md->clear_previous_strategy_options();
             ks_md->clear_next_strategy_options();
-            _db.validate_keyspace_update(*ks_md);
 
             auto schema_muts = prepare_keyspace_update_announcement(_db, ks_md, guard.write_timestamp());
             for (auto& m: schema_muts) {
