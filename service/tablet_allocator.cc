@@ -2123,7 +2123,7 @@ public:
                     const auto* table_stats = load_stats_for_table(table);
                     return table_stats && table_stats->split_ready_seq_number == seq_num;
                 });
-                if (all_tables_ready) {
+                if (!utils::get_local_injector().enter("skip_split") && all_tables_ready) {
                     finalize_decision();
                     lblogger.info("Finalizing resize decision for table {} as all replicas agree on sequence number {}",
                                   table, tmap.resize_decision().sequence_number);

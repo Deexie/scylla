@@ -2846,6 +2846,8 @@ future<> repair_service::init_ms_handlers() {
     });
 
     ser::repair_rpc_verbs::register_repair_update_compaction_ctrl(&ms, [this] (const rpc::client_info& cinfo, locator::global_tablet_id gid, service::frozen_topology_guard topo_guard) -> future<> {
+        co_await utils::get_local_injector().inject("repair_update_compaction_ctrl_wait", utils::wait_for_message(300s));
+
         co_await container().invoke_on_all([gid, topo_guard] (repair_service& local_repair) mutable -> future<> {
             auto& table = local_repair.get_db().local().find_column_family(gid.table);
             auto erm = table.get_effective_replication_map();

@@ -8,6 +8,7 @@ import uuid
 from cassandra.protocol import ConfigurationException, InvalidRequest, SyntaxException
 from cassandra.query import SimpleStatement, ConsistencyLevel
 from test.cluster.tasks.task_manager_client import TaskManagerClient
+from test.cluster.test_incremental_repair import trigger_tablet_merge
 from test.cluster.test_tablets2 import safe_rolling_restart
 from test.pylib.internal_types import ServerInfo
 from test.pylib.manager_client import ManagerClient
@@ -1716,3 +1717,46 @@ async def test_table_creation_wakes_up_balancer(manager: ManagerClient):
         # up to stats refresh period, which is 60s. So use a small timeout.
         await manager.api.message_injection(server.ip_addr, 'wait-before-topology-coordinator-goes-to-sleep')
         await log.wait_for('wait-after-topology-coordinator-gets-event: wait', from_mark=mark, timeout=5)
+
+@pytest.mark.asyncio
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_repair_compaction_lock(manager: ManagerClient):
+    module_name = "tablets"
+    tm = TaskManagerClient(manager.api)
+
+    servers, cql, hosts, ks, table_id = await create_table_insert_data_for_repair(manager)
+    assert module_name in await tm.list_modules(servers[0].ip_addr), "tablets module wasn't registered"
+
+    for server in servers:
+        await manager.api.enable_injection(server.ip_addr, 'merge_completion_fiber', one_shot=False)
+        await manager.api.enable_injection(server.ip_addr, 'replica_merge_completion_wait', one_shot=False)
+        await manager.api.enable_injection(server.ip_addr, 'skip_split', one_shot=False)
+
+    coord = await find_server_by_host_id(manager, servers, await get_topology_coordinator(manager))
+    log2 = await manager.server_open_log(coord.server_id)
+    await trigger_tablet_merge(manager, servers, [log2])
+
+    time.sleep(5)
+
+    for server in servers:
+        await manager.api.enable_injection(server.ip_addr, 'repair_update_compaction_ctrl_wait', one_shot=False)
+    await manager.api.tablet_repair(servers[0].ip_addr, ks, "test", "all", await_completion=False)
+
+
+    time.sleep(5)
+
+    log3 = await manager.server_open_log(coord.server_id)
+    s1_mark = await log3.mark()
+
+    for server in servers:
+        await manager.api.message_injection(server.ip_addr, 'merge_completion_fiber')
+
+    await log3.wait_for('Merge completion fiber finished, about to sleep', from_mark=s1_mark)
+
+    for server in servers:
+        await manager.api.message_injection(server.ip_addr, 'repair_update_compaction_ctrl_wait')
+
+    time.sleep(5)
+
+    for server in servers:
+        await read_barrier(manager.api, server.ip_addr)
