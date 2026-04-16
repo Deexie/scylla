@@ -18,8 +18,7 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from multiprocessing import Event
 from pathlib import Path
 from typing import TYPE_CHECKING
-from test import TOP_SRC_DIR, path_to
-from test.pylib.random_tables import RandomTables
+from test import TOP_SRC_DIR, MODES_TIMEOUT_FACTOR, path_to
 from test.pylib.util import unique_name
 from test.pylib.manager_client import ManagerClient
 from test.pylib.async_cql import run_async
@@ -393,3 +392,8 @@ async def key_provider(request, tmpdir, scylla_binary):
     """Encryption providers fixture"""
     async with make_key_provider_factory(request.param, tmpdir, scylla_binary) as res:
         yield res
+
+
+@pytest.fixture(scope="function")
+def failure_detector_timeout(build_mode):
+    return 2000 * MODES_TIMEOUT_FACTOR[build_mode]
