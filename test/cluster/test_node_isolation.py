@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 
 @pytest.mark.asyncio
 @pytest.mark.nightly
-async def test_banned_node_notification(manager: ManagerClient) -> None:
+async def test_banned_node_notification(manager: ManagerClient, failure_detector_timeout) -> None:
     """Test that a node banned from the cluster get notification about been banned"""
     # Decrease the failure detector threshold so we don't have to wait for too long.
     config = {
-        'failure_detector_timeout_in_ms': 2000
+        'failure_detector_timeout_in_ms': failure_detector_timeout
     }
     srvs = await manager.servers_add(3, config=config)
     cql = manager.get_cql()

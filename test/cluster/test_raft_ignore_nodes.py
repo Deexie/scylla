@@ -60,14 +60,14 @@ async def make_servers(manager: ManagerClient, servers_num: int,
 
 
 @pytest.mark.asyncio
-async def test_raft_replace_ignore_nodes(manager: ManagerClient) -> None:
+async def test_raft_replace_ignore_nodes(manager: ManagerClient, failure_detector_timeout) -> None:
     """Replace 3 dead nodes.
 
        This is a slow test with a 7 node cluster and 3 replace operations,
        we want to run it only in dev mode.
     """
     logger.info("Booting initial cluster")
-    servers = await make_servers(manager, 7, config={'failure_detector_timeout_in_ms': 2000})
+    servers = await make_servers(manager, 7, config={'failure_detector_timeout_in_ms': failure_detector_timeout})
 
     s1_id = await manager.get_host_id(servers[1].server_id)
     s2_id = await manager.get_host_id(servers[2].server_id)

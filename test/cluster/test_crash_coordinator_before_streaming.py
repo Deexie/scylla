@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @pytest.mark.asyncio
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
-async def test_kill_coordinator_during_op(manager: ManagerClient) -> None:
+async def test_kill_coordinator_during_op(manager: ManagerClient, failure_detector_timeout) -> None:
     """ Kill coordinator with error injection while topology operation is running for cluster: decommission,
     bootstrap, removenode, replace.
 
@@ -41,7 +41,7 @@ async def test_kill_coordinator_during_op(manager: ManagerClient) -> None:
     """
     # Decrease the failure detector threshold so we don't have to wait for too long.
     config = {
-        'failure_detector_timeout_in_ms': 2000
+        'failure_detector_timeout_in_ms': failure_detector_timeout
     }
     cmdline = [
         '--logger-log-level', 'raft_topology=trace',
