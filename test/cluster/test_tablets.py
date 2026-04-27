@@ -436,7 +436,8 @@ async def test_alter_tablets_rf_dc_drop(request: pytest.FixtureRequest, manager:
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
 async def test_numeric_rf_to_rack_list_conversion(request: pytest.FixtureRequest, manager: ManagerClient) -> None:
     async def get_replication_options(ks: str):
-        res = await cql.run_async(f"SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{ks}'")
+        await read_barrier(manager.api, servers[0].ip_addr)
+        res = await cql.run_async(f"SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{ks}'", host=host)
         repl = parse_replication_options(res[0].replication_v2 or res[0].replication)
         return repl
 
@@ -451,6 +452,7 @@ async def test_numeric_rf_to_rack_list_conversion(request: pytest.FixtureRequest
     host_ids = [await manager.get_host_id(s.server_id) for s in servers]
 
     cql = manager.get_cql()
+    host = (await wait_for_cql_and_get_hosts(cql, [servers[0]], time.time() + 30))[0]
 
     await cql.run_async(f"create keyspace ks1 with replication = {{'class': 'NetworkTopologyStrategy', 'dc1': 1}} and tablets = {{'initial': 4}};")
     await cql.run_async("create table ks1.t (pk int primary key);")
@@ -1112,7 +1114,8 @@ async def test_multi_rf_increase_before_decrease_0_N(request: pytest.FixtureRequ
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
 async def test_numeric_rf_to_rack_list_conversion_abort(request: pytest.FixtureRequest, manager: ManagerClient) -> None:
     async def get_replication_options(ks: str):
-        res = await cql.run_async(f"SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{ks}'")
+        await read_barrier(manager.api, servers[0].ip_addr)
+        res = await cql.run_async(f"SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{ks}'", host=host)
         repl = parse_replication_options(res[0].replication_v2 or res[0].replication)
         return repl
 
@@ -1130,6 +1133,7 @@ async def test_numeric_rf_to_rack_list_conversion_abort(request: pytest.FixtureR
     host_ids = [await manager.get_host_id(s.server_id) for s in servers]
 
     cql = manager.get_cql()
+    host = (await wait_for_cql_and_get_hosts(cql, [servers[0]], time.time() + 30))[0]
 
     await cql.run_async(f"create keyspace ks1 with replication = {{'class': 'NetworkTopologyStrategy', 'dc1': 1}} and tablets = {{'initial': 4}};")
     await cql.run_async("create table ks1.t (pk int primary key);")
