@@ -538,7 +538,8 @@ async def test_numeric_rf_to_rack_list_conversion(request: pytest.FixtureRequest
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
 async def test_enforce_rack_list_option(request: pytest.FixtureRequest, manager: ManagerClient) -> None:
     async def get_replication_options(ks: str):
-        res = await cql.run_async(f"SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{ks}'")
+        await read_barrier(manager.api, servers[0].ip_addr)
+        res = await cql.run_async(f"SELECT * FROM system_schema.keyspaces WHERE keyspace_name = '{ks}'", host=host)
         repl = parse_replication_options(res[0].replication_v2 or res[0].replication)
         return repl
 
@@ -551,6 +552,7 @@ async def test_enforce_rack_list_option(request: pytest.FixtureRequest, manager:
                 await manager.server_add(config=config, cmdline=['--smp=2'], property_file={'dc': 'dc2', 'rack': 'rack2b'})]
 
     cql = manager.get_cql()
+    host = (await wait_for_cql_and_get_hosts(cql, [servers[0]], time.time() + 30))[0]
 
     await cql.run_async(f"create keyspace ks1 with replication = {{'class': 'NetworkTopologyStrategy', 'dc1': 1}} and tablets = {{'initial': 4}};")
     await cql.run_async("create table ks1.t (pk int primary key);")
