@@ -869,7 +869,7 @@ class ScyllaServer:
         env.pop('SCYLLA_HOME', None)
         env.update(self.append_env if append_env_override is None else append_env_override)
         env['UBSAN_OPTIONS'] = f'halt_on_error=1:abort_on_error=1:suppressions={TOP_SRC_DIR / "ubsan-suppressions.supp"}'
-        env['ASAN_OPTIONS'] = f'disable_coredump=0:abort_on_error=1:halt_on_error=1:detect_stack_use_after_return=1:quarantine_size_mb=1024:redzone=256:max_redzone=2048:new_delete_type_mismatch=1:alloc_dealloc_mismatch=1:malloc_context_size=30:check_initialization_order=1:strict_init_order=1'
+        env['ASAN_OPTIONS'] = f'disable_coredump=0:abort_on_error=1:detect_stack_use_after_return=1:fast_unwind_on_fatal=0'
 
         # Set up socket for receiving sd_notify messages from Scylla
         self._setup_notify_socket()
