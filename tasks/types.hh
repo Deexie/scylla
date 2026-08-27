@@ -27,7 +27,7 @@ class task_info {
     task_id _id;
     unsigned _shard;
     uint64_t _sequence_number;
-    task_kind _kind;
+    task_kind _kind = task_kind::node;
 
     task_info(task_id id, unsigned shard, uint64_t sequence_number, task_kind kind) noexcept
         : _id(id)

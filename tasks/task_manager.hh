@@ -302,7 +302,7 @@ public:
             std::string keyspace,
             std::string table,
             std::string entity,
-            task_id parent_id,
+            task_info info,
             std::string type,
             tasks::is_abortable is_abortable,
             tasks::is_internal is_internal,
@@ -325,6 +325,57 @@ public:
         future<std::optional<double>> expected_total_workload() const override;
 
         friend task;
+    };
+
+    class task_builder {
+        module_ptr _module;
+        std::string _type;
+        task_id _id;
+
+        std::optional<uint64_t> _sequence_number;
+        std::optional<std::string> _scope;
+        std::optional<std::string> _keyspace;
+        std::optional<std::string> _table;
+        std::optional<std::string> _entity;
+        std::optional<task_info> _parent_info;
+
+        std::optional<tasks::is_abortable> _is_abortable;
+        std::optional<tasks::is_internal> _is_internal;
+        std::optional<tasks::is_user_task> _is_user_task;
+
+        general_task_impl::action_fn _action;
+        general_task_impl::progress_fn _progress_fn;
+        general_task_impl::workload_fn _workload_fn;
+        general_task_impl::abort_fn _abort_fn;
+        general_task_impl::finalize_fn _finalizer;
+    public:
+        task_builder(module_ptr module, std::string type);
+        task_builder(module_ptr module, std::string type, task_id id);
+
+        task_builder() = delete;
+        task_builder(const task_builder&) = delete;
+        task_builder& operator=(const task_builder&) = delete;
+        task_builder(task_builder&&) = delete;
+        task_builder& operator=(task_builder&&) = delete;
+        ~task_builder() = default;
+
+        task_builder& set_sequence_number(uint64_t sequence_number);
+        task_builder& set_scope(std::string scope);
+        task_builder& set_keyspace(std::string keyspace);
+        task_builder& set_table(std::string table);
+        task_builder& set_entity(std::string entity);
+        task_builder& set_parent_info(task_info parent_info);
+
+        task_builder& set_is_abortable(tasks::is_abortable is_abortable);
+        task_builder& set_is_internal(tasks::is_internal is_internal);
+        task_builder& set_is_user_task(tasks::is_user_task is_user_task);
+
+        task_builder& set_progress_fn(general_task_impl::progress_fn progress_fn);
+        task_builder& set_workload_fn(general_task_impl::workload_fn workload_fn);
+        task_builder& set_abort_fn(general_task_impl::abort_fn abort_fn);
+        task_builder& set_finalizer(general_task_impl::finalize_fn finalizer);
+
+        future<task_ptr> build(general_task_impl::action_fn action) &&;
     };
 
     class virtual_task : public enable_lw_shared_from_this<virtual_task> {
