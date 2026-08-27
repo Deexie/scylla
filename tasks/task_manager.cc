@@ -396,6 +396,85 @@ void task_manager::task::set_virtual_parent() noexcept {
     _impl->set_virtual_parent();
 }
 
+task_manager::general_task_impl::general_task_impl(
+        module_ptr module,
+        task_id id,
+        uint64_t sequence_number,
+        std::string scope,
+        std::string keyspace,
+        std::string table,
+        std::string entity,
+        task_id parent_id,
+        std::string type,
+        tasks::is_abortable is_abortable,
+        tasks::is_internal is_internal,
+        tasks::is_user_task is_user_task,
+        action_fn action,
+        progress_fn progress_fn,
+        workload_fn workload_fn,
+        abort_fn abort_fn,
+        finalize_fn finalizer) noexcept
+    : impl(std::move(module), id, sequence_number, std::move(scope), std::move(keyspace), std::move(table), std::move(entity), parent_id)
+    , _type(std::move(type))
+    , _is_abortable(is_abortable)
+    , _is_internal(is_internal)
+    , _is_user_task(is_user_task)
+    , _action(std::move(action))
+    , _progress_fn(std::move(progress_fn))
+    , _workload_fn(std::move(workload_fn))
+    , _abort_fn(std::move(abort_fn))
+    , _finalizer(std::move(finalizer))
+{}
+
+std::string task_manager::general_task_impl::type() const {
+    return _type;
+}
+
+future<task_manager::task::progress> task_manager::general_task_impl::get_progress() const {
+    if (_cached_progress) {
+        co_return *_cached_progress;
+    }
+    co_return co_await _progress_fn();
+}
+
+tasks::is_abortable task_manager::general_task_impl::is_abortable() const noexcept {
+    return _is_abortable;
+}
+
+tasks::is_internal task_manager::general_task_impl::is_internal() const noexcept {
+    return _is_internal;
+}
+
+tasks::is_user_task task_manager::general_task_impl::is_user_task() const noexcept {
+    return _is_user_task;
+}
+
+void task_manager::general_task_impl::abort() noexcept {
+    return _abort_fn(_as);
+}
+
+future<> task_manager::general_task_impl::release_resources() noexcept {
+    _cached_progress = co_await get_progress();
+    _cached_workload = co_await expected_total_workload();
+    co_await _finalizer();
+    _finalizer = {};
+    _action = {};
+    _progress_fn = {};
+    _workload_fn = {};
+    _abort_fn = {};
+}
+
+future<> task_manager::general_task_impl::run() {
+    return _action();
+}
+
+future<std::optional<double>> task_manager::general_task_impl::expected_total_workload() const {
+    if (_cached_workload) {
+        co_return *_cached_workload;
+    }
+    co_return co_await _workload_fn();
+}
+
 task_manager::virtual_task::impl::impl(module_ptr module) noexcept
     : _module(std::move(module))
 {}

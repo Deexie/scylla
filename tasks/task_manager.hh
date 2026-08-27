@@ -271,6 +271,62 @@ public:
         friend class ::repair::task_manager_module;
     };
 
+    class general_task_impl : public task::impl {
+    public:
+        using action_fn = noncopyable_function<future<> ()>;
+        using progress_fn = noncopyable_function<future<task::progress> ()>;
+        using workload_fn = noncopyable_function<future<std::optional<double>> ()>;
+        using abort_fn = noncopyable_function<void (seastar::abort_source&)>;
+        using finalize_fn = noncopyable_function<future<> ()>;
+    private:
+        std::string _type;
+        tasks::is_abortable _is_abortable;
+        tasks::is_internal _is_internal;
+        tasks::is_user_task _is_user_task;
+
+        mutable action_fn _action;
+        mutable progress_fn _progress_fn;
+        mutable workload_fn _workload_fn;
+        mutable abort_fn _abort_fn;
+        mutable finalize_fn _finalizer;
+
+        // Engaged only after the task is finished and its resources have been released.
+        std::optional<task_manager::task::progress> _cached_progress;
+        std::optional<double> _cached_workload;
+    public:
+        general_task_impl(
+            module_ptr module,
+            task_id id,
+            uint64_t sequence_number,
+            std::string scope,
+            std::string keyspace,
+            std::string table,
+            std::string entity,
+            task_id parent_id,
+            std::string type,
+            tasks::is_abortable is_abortable,
+            tasks::is_internal is_internal,
+            tasks::is_user_task is_user_task,
+            action_fn action,
+            progress_fn progress_fn,
+            workload_fn workload_fn,
+            abort_fn abort_fn,
+            finalize_fn finalizer) noexcept;
+
+        std::string type() const override;
+        future<task_manager::task::progress> get_progress() const override;
+        tasks::is_abortable is_abortable() const noexcept override;
+        tasks::is_internal is_internal() const noexcept override;
+        tasks::is_user_task is_user_task() const noexcept override;
+        void abort() noexcept override;
+        future<> release_resources() noexcept override;
+    protected:
+        future<> run() override;
+        future<std::optional<double>> expected_total_workload() const override;
+
+        friend task;
+    };
+
     class virtual_task : public enable_lw_shared_from_this<virtual_task> {
     public:
         class impl {
