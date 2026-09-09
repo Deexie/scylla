@@ -453,6 +453,10 @@ static future<std::list<locator::host_id>> get_hosts_participating_in_repair(
 }
 
 
+bool repair_needs_hints_batchlog_flush(const schema& s) {
+    return s.tombstone_gc_options().mode() == tombstone_gc_mode::repair;
+}
+
 future<std::tuple<bool, bool, gc_clock::time_point>> repair_service::flush_hints(repair_uniq_id id,
         sstring keyspace, std::vector<sstring> cfs,
         std::unordered_set<locator::host_id> ignore_nodes) {
@@ -462,11 +466,7 @@ future<std::tuple<bool, bool, gc_clock::time_point>> repair_service::flush_hints
     if (db.features().tombstone_gc_options) {
         for (auto& table: cfs) {
             if (const auto* cf = find_column_family_if_exists(db, keyspace, table)) {
-                auto s = cf->schema();
-                const auto& options = s->tombstone_gc_options();
-                if (options.mode() == tombstone_gc_mode::repair) {
-                    needs_flush_before_repair = true;
-                }
+                needs_flush_before_repair |= repair_needs_hints_batchlog_flush(*cf->schema());
             }
         }
     }
