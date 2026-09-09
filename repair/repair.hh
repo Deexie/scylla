@@ -269,6 +269,8 @@ struct repair_update_system_table_request {
 struct repair_update_system_table_response {
 };
 
+constexpr std::chrono::seconds repair_flush_hints_batchlog_timeout{300};
+
 struct repair_flush_hints_batchlog_request {
     tasks::task_id repair_uuid;
     std::list<gms::inet_address> unused;
