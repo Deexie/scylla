@@ -5364,8 +5364,8 @@ future<tablet_operation_result> storage_service::do_tablet_operation(locator::gl
     }
 }
 
-future<service::tablet_operation_repair_result> storage_service::repair_tablet(locator::global_tablet_id tablet, service::session_id session_id) {
-    auto result = co_await do_tablet_operation(tablet, "Repair", [this, tablet, session_id] (locator::tablet_metadata_guard& guard) -> future<tablet_operation_result> {
+future<service::tablet_operation_repair_result> storage_service::repair_tablet(locator::global_tablet_id tablet, service::session_id session_id, tablet_repair_flush_info flush) {
+    auto result = co_await do_tablet_operation(tablet, "Repair", [this, tablet, session_id, flush] (locator::tablet_metadata_guard& guard) -> future<tablet_operation_result> {
         slogger.debug("Executing repair for tablet={}", tablet);
         auto& tmap = guard.get_tablet_map();
         auto* trinfo = tmap.get_tablet_transition_info(tablet.tablet);
@@ -7035,9 +7035,10 @@ void storage_service::init_messaging_service() {
             return ss.stream_tablet(tablet);
         });
     });
-    ser::storage_service_rpc_verbs::register_tablet_repair(&_messaging.local(), [this] (raft::server_id dst_id, locator::global_tablet_id tablet, rpc::optional<service::session_id> session_id) {
-        return handle_raft_rpc(dst_id, [tablet, session_id = session_id.value_or(service::session_id::create_null_id())] (auto& ss) -> future<service::tablet_operation_repair_result> {
-            auto res = co_await ss.repair_tablet(tablet, session_id);
+    ser::storage_service_rpc_verbs::register_tablet_repair(&_messaging.local(), [this] (raft::server_id dst_id, locator::global_tablet_id tablet, rpc::optional<service::session_id> session_id, rpc::optional<tablet_repair_flush_info> flush) {
+        // A coordinator too old to send flush expects the repair to flush.
+        return handle_raft_rpc(dst_id, [tablet, session_id = session_id.value_or(service::session_id::create_null_id()), flush = flush.value_or(tablet_repair_flush_info{tablet_repair_flush_mode::flush})] (auto& ss) -> future<service::tablet_operation_repair_result> {
+            auto res = co_await ss.repair_tablet(tablet, session_id, flush);
             co_return res;
         });
     });
