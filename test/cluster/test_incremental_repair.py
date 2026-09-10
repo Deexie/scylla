@@ -1405,16 +1405,18 @@ async def test_tombstone_gc_no_resurrection_hints_flush_failure(manager: ScyllaC
     """Verify that repair_time stays at epoch when hints flush fails, so tombstones
     are never GC-eligible after such a repair and data resurrection cannot occur.
 
-    With propagation_delay=0, gc_before = repair_time.  When hints flush fails,
-    repair_time is set to epoch (gc_clock::time_point{}) by the repair framework
-    (flush_time stays at epoch because hints_batchlog_flushed=False).  Therefore
-    gc_before = epoch, T.deletion_time ≈ now >> epoch, T is never GC-eligible, and
-    compaction cannot purge T regardless of what is in the repaired set.
+    With propagation_delay=0, gc_before = repair_time.  The topology coordinator
+    flushes hints and batchlog on all nodes before it starts a tablet repair.
+    When that flush fails, the repair request carries no flush time, the repair
+    ends as failed and does not record a repair time, so repair_time stays at
+    epoch (gc_clock::time_point{}).  Therefore gc_before = epoch,
+    T.deletion_time ≈ now >> epoch, T is never GC-eligible, and compaction
+    cannot purge T regardless of what is in the repaired set.
 
     Scenario:
       - D and T written to all replicas and flushed.
-      - Repair runs with injection that makes hints flush fail on servers[2].
-      - repair_time must stay at epoch (guard: hints_batchlog_flushed=False).
+      - Repair runs with injection that makes the flush fail on servers[2].
+      - repair_time must stay at epoch (guard: the request has no flush time).
       - Compaction on the repaired set: T not GC-eligible → key stays deleted.
     """
     servers, cql, hosts, ks, table_id, logs = await _setup_tombstone_gc_cluster(manager)
