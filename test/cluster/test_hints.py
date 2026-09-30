@@ -78,6 +78,15 @@ def count_hint_segments(hints_dir: str, target_host_id: str, shard: int | None =
     return len(glob.glob(os.path.join(hints_dir, shard_glob, str(target_host_id), "HintsLog-*.log")))
 
 
+def list_hint_segments(hints_dir: str, target_host_id: str) -> set[str]:
+    return set(glob.glob(os.path.join(hints_dir, "*", str(target_host_id), "HintsLog-*.log")))
+
+
+def hint_segment_id(path: str) -> int:
+    # HintsLog-<version>-<id>.log; ids only grow within a hints directory.
+    return int(os.path.basename(path).rsplit(".", 1)[0].rsplit("-", 1)[1])
+
+
 async def wait_for_hint_dir_removed(hints_dir: str, target_host_id: str,
                                     shard: int | None = None, timeout: int = 120):
     async def check_directory_gone():
@@ -1565,3 +1574,199 @@ async def test_hint_retransmission_keeps_column_mappings(manager: ScyllaClusterM
     rows = await cql.run_async(SimpleStatement(f"SELECT pk, v FROM {table}",
                                                 consistency_level=ConsistencyLevel.ONE))
     assert sorted((row.pk, row.v) for row in rows) == [(i, i + 1) for i in range(row_count)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_hint_resurrection_after_partial_segment_replay(manager: ScyllaClusterManager):
+    """
+    Reproducer for data resurrection: a hint that was already replayed before repair
+    is replayed again after a restart, because the segment holding it survived.
+
+    Setup (hint replay on s1 is paused so nothing is sent yet):
+    1. s2 fails a write W (to t1) coming from s1, so s1 stores a hint for it. This stands
+       for a transient outage of s2 that ends before the next write.
+    2. s2 is healthy again and accepts tombstone T, which shadows W, directly. T is not
+       hinted; if it were, the restart in step 7 would redeliver it together with W and
+       the row would stay deleted.
+    3. Repair of t1 starts. It creates a sync point on s1 right after W and blocks
+       until hints up to that point are replayed. W is still unsent because s1's
+       sender is paused (in production: the sender lags behind).
+    4. While the sender is still paused, s1 stores hint H2 (a write to t2 that s2 is
+       injected to reject). H2 lands in the same segment as W, after the sync point.
+
+    Replay is resumed:
+    5. W is delivered to s2, where T already shadows it. H2 fails. The replayed bound
+       passed the sync point, so repair proceeds and completes. The segment is kept
+       because H2 failed.
+    6. T is purged. The repair time makes it purgeable, but only once the commitlog no longer
+       holds any t1 write older than T: tombstone GC refuses to go past the oldest write to
+       the table that is still sitting in the commitlog. So the test first pushes enough
+       unrelated data through the commitlog on both nodes to close the segment with T and
+       the earlier t1 writes, then flushes and runs a major compaction. T and the W it
+       shadows are gone from both nodes. This is legitimate: every hint below the sync
+       point was delivered.
+
+    Second delivery:
+    7. s1 is stopped, s2 starts accepting t2 writes again and s1 is started. The order
+       matters: while s1 is up H2 is retried every second, and a success would complete
+       and delete the segment. The replay cursor is in-memory only, so the surviving
+       segment is replayed from its beginning: H2 is delivered, and W is delivered to s2
+       again with nothing to shadow it.
+    """
+    config = {
+        "enable_cache": False,
+        "hinted_handoff_enabled": True,
+        # With the cache on, repair records the last batchlog replay time (around node start)
+        # as the repair time, which would keep T from ever becoming purgeable.
+        "repair_hints_batchlog_flush_cache_time_in_ms": 0,
+        # Tombstone GC is clamped by the oldest write to the table still held in the commitlog,
+        # including the active segment. Small segments let the test rotate it out cheaply.
+        "commitlog_segment_size_in_mb": 1,
+    }
+    s1, s2 = await manager.servers_add(2, cmdline=["--smp", "1", "--logger-log-level", "hints_manager=debug"],
+                                       config=config, auto_rack_dc="dc1")
+    cql, hosts = await manager.get_ready_cql([s1, s2])
+    # Hinted writes must be coordinated by s1, otherwise s2 fails them locally and no hint is stored.
+    cql_s1 = await manager.get_cql_exclusive(s1)
+    s2_host_id = await manager.get_host_id(s2.server_id)
+    s1_hints_dir = await get_hints_dir(manager, s1)
+    s1_log = await manager.server_open_log(s1.server_id)
+
+    def bare(table: str) -> str:
+        return table.split(".")[1]
+
+    async def reject_writes_on_s2(table: str):
+        await manager.api.enable_injection(s2.ip_addr, "database_apply", one_shot=False,
+                                           parameters={"ks_name": ks, "cf_name": bare(table), "what": "throw"})
+
+    async def wait_until_hints_written(expected: int):
+        async def check():
+            written = await get_hint_metrics(manager.metrics, s1.ip_addr, "written")
+            return True if written and written >= expected else None
+        await wait_for(check, time.time() + 60)
+
+    async def hinted_write(table: str, stmt: str, expected_written: int):
+        # s2 rejects writes to `table`, so a CL=ONE write coordinated by s1 succeeds locally and
+        # s1 stores a hint for s2 as soon as the failure response arrives.
+        await reject_writes_on_s2(table)
+        try:
+            await cql_s1.run_async(SimpleStatement(stmt, consistency_level=ConsistencyLevel.ONE))
+            await wait_until_hints_written(expected_written)
+        finally:
+            await manager.api.disable_injection(s2.ip_addr, "database_apply")
+
+    async def commitlog_segment_counts() -> list[int]:
+        counts = []
+        for srv in (s1, s2):
+            metrics = await manager.metrics.query(srv.ip_addr)
+            counts.append(int(metrics.get("scylla_commitlog_segments")))
+        return counts
+
+    async def count_sources_holding_partition(table: str, p: int) -> int:
+        # Every memtable or sstable that has anything for the partition emits one partition_start
+        # fragment. The partitions checked here contain nothing but a partition tombstone and the
+        # write it shadows, so this is the number of copies of the tombstone still around.
+        count = 0
+        for host in hosts:
+            mf_query = f"SELECT * FROM MUTATION_FRAGMENTS({table}) WHERE p = {p} AND partition_region = 0 ALLOW FILTERING"
+            res = list(await cql.run_async(mf_query, host=host))
+            logger.info(f"Host {host} returned {res}")
+            count += len(res)
+        return count
+
+    async with new_test_keyspace(manager, "with replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 2} "
+                                          "and tablets = {'enabled': false}") as ks:
+        gc_opts = " with tombstone_gc = {'mode': 'repair', 'propagation_delay_in_seconds': 0}"
+        async with new_test_table(manager, ks, "p int primary key, v int", gc_opts) as t1, \
+                   new_test_table(manager, ks, "p int primary key, v int", gc_opts) as t2, \
+                   new_test_table(manager, ks, "p int, c int, v text, primary key (p, c)") as filler:
+            await manager.api.enable_injection(s1.ip_addr, "hinted_handoff_pause_hint_replay", one_shot=False)
+
+            # Hint segments are rolled every hints_flush_period by re-creating the store. Store a
+            # throwaway hint and wait for the roll so that everything below lands in one fresh segment.
+            # The directory cannot be watched for this: the recreated reserve file gets the same name
+            # and may get the same inode, so use the store re-creation log line instead.
+            await hinted_write(t1, f"INSERT INTO {t1} (p, v) VALUES (99, 99)", 1)
+            throwaway_segment = min(list_hint_segments(s1_hints_dir, s2_host_id), key=hint_segment_id)
+            store_recreated = re.escape(f"hint_endpoint_manager[{s2_host_id}]:add_store: Going to add a store")
+            roll_mark = await s1_log.mark()
+            await s1_log.wait_for(store_recreated, from_mark=roll_mark, timeout=60)
+            roll_time = time.monotonic()
+
+            # W: the hint in scope of the sync point. Only s1 holds the row; s2 rejected it.
+            await hinted_write(t1, f"INSERT INTO {t1} (p, v) VALUES (0, 1)", 2)
+            assert await count_sources_holding_partition(t1, 0) == 1
+
+            # T: shadows W on both nodes. Make sure its deletion time precedes the repair time.
+            await cql.run_async(SimpleStatement(f"DELETE FROM {t1} WHERE p = 0", consistency_level=ConsistencyLevel.ALL))
+            assert await count_sources_holding_partition(t1, 0) == 2
+            await asyncio.sleep(1)
+
+            # Repair creates the sync point on s1 and blocks until hints up to it are replayed.
+            s1_mark = await s1_log.mark()
+            repair_task = asyncio.create_task(manager.api.repair(s1.ip_addr, ks, bare(t1)))
+            await s1_log.wait_for("Started to flush hints for repair_flush_hints_batchlog_request", from_mark=s1_mark, timeout=60)
+
+            # H2: stored after the sync point, in the same segment as W. It will fail when replayed.
+            await reject_writes_on_s2(t2)
+            await cql_s1.run_async(SimpleStatement(f"INSERT INTO {t2} (p, v) VALUES (1, 1)", consistency_level=ConsistencyLevel.ONE))
+            await wait_until_hints_written(3)
+            setup_duration = time.monotonic() - roll_time
+            assert setup_duration < 8, f"setup took {setup_duration:.1f}s; W and H2 may have landed in different segments"
+            # The fresh store took over the throwaway's successor id for its first segment, so W and
+            # H2 are in the lowest-id file other than the throwaway one.
+            wh2_segment = min(list_hint_segments(s1_hints_dir, s2_host_id) - {throwaway_segment}, key=hint_segment_id)
+
+            # Resume replay: the throwaway hint and W are delivered, H2 fails. W's segment is handed
+            # to the sender only when the store is re-created at the next roll, so this can take
+            # up to hints_flush_period.
+            await manager.api.disable_injection(s1.ip_addr, "hinted_handoff_pause_hint_replay")
+            await wait_until_hints_are_sent_from(manager, [s1], 2)
+
+            async def h2_failed():
+                errors = await get_hint_metrics(manager.metrics, s1.ip_addr, "send_errors")
+                return True if errors and errors >= 1 else None
+            await wait_for(h2_failed, time.time() + 60)
+
+            # The sync point was satisfied by W alone, so repair completes even though the segment stays.
+            await asyncio.wait_for(repair_task, timeout=120)
+            current_segments = list_hint_segments(s1_hints_dir, s2_host_id)
+            assert throwaway_segment not in current_segments
+            assert wh2_segment in current_segments, f"W/H2 segment {wh2_segment} was deleted; present: {current_segments}"
+
+            # Rotate the commitlog segment holding T and the earlier t1 writes out on both nodes, so
+            # it stops clamping gc_before once it is flushed.
+            segments_before_filler = await commitlog_segment_counts()
+            filler_value = "v" * 1024
+            c = 0
+            while any(now < before + 2 for now, before in zip(await commitlog_segment_counts(), segments_before_filler)):
+                await asyncio.gather(*[cql.run_async(SimpleStatement(f"INSERT INTO {filler} (p, c, v) VALUES (0, {c + i}, '{filler_value}')",
+                                                                     consistency_level=ConsistencyLevel.ALL))
+                                       for i in range(100)])
+                c += 100
+
+            # Repair-mode tombstone GC now considers T purgeable on both nodes.
+            async def tombstone_purged():
+                await asyncio.gather(*[manager.api.flush_all_keyspaces(srv.ip_addr) for srv in (s1, s2)])
+                await asyncio.gather(*[manager.api.keyspace_compaction(srv.ip_addr, ks) for srv in (s1, s2)])
+                return True if await count_sources_holding_partition(t1, 0) == 0 else None
+            await wait_for(tombstone_purged, time.time() + 30)
+
+            # Lose s1's in-memory replay cursor. H2 must keep failing until s1 is down, otherwise a
+            # retry delivers it and deletes the segment before the restart.
+            await manager.server_stop_gracefully(s1.server_id)
+            await manager.api.disable_injection(s2.ip_addr, "database_apply")
+            await manager.server_start(s1.server_id)
+            cql, hosts = await manager.get_ready_cql([s1, s2])
+
+            # After the restart the surviving segment is replayed from its beginning: W and H2.
+            await wait_until_hints_are_sent_from(manager, [s1], 2)
+
+            async def wh2_segment_gone():
+                return True if wh2_segment not in list_hint_segments(s1_hints_dir, s2_host_id) else None
+            await wait_for(wh2_segment_gone, time.time() + 60)
+
+            rows = list(await cql.run_async(SimpleStatement(f"SELECT p, v FROM {t1} WHERE p = 0",
+                                                            consistency_level=ConsistencyLevel.ALL)))
+            assert rows == [], f"Deleted row was resurrected by hint replay: {rows}"
